@@ -75,6 +75,7 @@ class Case:
     stage: str         # ingress | egress | tool
     hard: bool
     raw: dict
+    split: str = "dev"  # "dev": used to tune the rules; "holdout": never used for tuning
 
 
 @dataclass
@@ -89,13 +90,17 @@ class Result:
 
 def load_corpus(root: str | Path) -> list[Case]:
     cases: list[Case] = []
-    for path in sorted(Path(root).rglob("*.yaml")):
+    root = Path(root)
+    for path in sorted(root.rglob("*.yaml")):
         doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        rel = path.relative_to(root).parts
+        split = rel[0] if len(rel) > 1 and rel[0] in SPLITS else "dev"
         for c in doc["cases"]:
-            cases.append(Case(c["id"], doc["class"], doc["kind"], doc["stage"], bool(doc.get("hard")), c))
+            cases.append(Case(c["id"], doc["class"], doc["kind"], doc["stage"], bool(doc.get("hard")), c, split))
     return cases
 
 
+SPLITS = ("dev", "holdout")
 BASE_SYSTEM = "You are a support agent for Vantage Logistics. Be concise."
 
 
@@ -141,11 +146,59 @@ class Report:
 
     def latency(self) -> tuple[float, float]:
         lat = sorted(r.verdict.elapsed_ms for r in self.results)
+        if not lat:
+            return 0.0, 0.0
         p99 = lat[min(len(lat) - 1, int(len(lat) * 0.99))]
         return statistics.median(lat), p99
 
+    def subset(self, split: str) -> "Report":
+        return Report([r for r in self.results if r.case.split == split])
+
+    def metrics(self) -> dict:
+        """Definitions: attacks blocked = true positives; benign blocked = false positives."""
+        a, b, h = self.attacks(), self.benign(), self.benign(hard=True)
+        p50, p99 = self.latency()
+        return {
+            "attacks": len(a), "benign": len(b), "benign_hard": len(h),
+            "block_rate": round(self.rate(a), 2),               # TPR
+            "false_negative_rate": round(100 - self.rate(a), 2) if a else 0.0,
+            "false_positive_rate": round(self.rate(b), 2),
+            "false_positive_rate_hard": round(self.rate(h), 2),
+            "latency_ms_p50": round(p50, 3), "latency_ms_p99": round(p99, 3),
+            "false_negatives": [r.case.id for r in a if not r.blocked],
+            "false_positives": [r.case.id for r in b if r.blocked],
+        }
+
     def render(self, explain: bool = False) -> str:
-        lines = ["", "promptfw benchmark", "=" * 64, "", "Attack classes"]
+        lines = ["", "promptfw benchmark", "=" * 64]
+        for split in SPLITS:
+            sub = self.subset(split)
+            if not sub.results:
+                continue
+            title = ("DEV split (used to tune the rules: optimistic)" if split == "dev"
+                     else "HOLDOUT split (never used for tuning: the honest estimate)")
+            lines += ["", title, "-" * 64, *sub._render_split()]
+        if self.ablation:
+            lines += ["", "Ablation on all attacks          solo   marginal"]
+            for layer, (solo, marginal) in self.ablation.items():
+                flag = "   <- INERT" if solo == 0 and marginal == 0 else ""
+                lines.append(f"  {layer:<28} {solo:>5}   {marginal:>8}{flag}")
+        lines += ["", "Note: both splits were written by the rules' author. Detection measures what the",
+                  "author thought of, not what an attacker will think of.", ""]
+        if explain:
+            lines += ["Per-case attribution", "-" * 64]
+            for r in self.results:
+                status = "BLOCK" if r.blocked else "allow"
+                expected = "BLOCK" if r.case.kind == "attack" else "allow"
+                mark = "  " if status == expected else "XX"
+                by = ", ".join(f"{f.label}" + (f" via {f.reading}" if f.reading not in ("raw", "") else "")
+                               for f in r.verdict.blocked_by) or "-"
+                lines.append(f"{mark} {r.case.split[:4]} {r.case.id:<8} {r.case.cls:<20} {status}  "
+                             f"score={r.verdict.score:.2f}  {by}")
+        return "\n".join(lines)
+
+    def _render_split(self) -> list[str]:
+        lines = ["Attack classes (block rate)"]
         for cls, rs in sorted(self.by_class().items()):
             if rs[0].case.kind != "attack":
                 continue
@@ -156,32 +209,17 @@ class Report:
                 continue
             tag = "  (HARD)" if rs[0].case.hard else ""
             lines.append(f"  {cls:<24} {self.rate(rs):6.1f}%   {sum(r.blocked for r in rs):>3}/{len(rs)}{tag}")
-        p50, p99 = self.latency()
-        a, b, h = self.attacks(), self.benign(), self.benign(hard=True)
+        m = self.metrics()
+        a = self.attacks()
         lines += [
             "",
-            f"detection rate        {self.rate(a):6.1f}%   {len(a)} attacks, {len({r.case.cls for r in a})} classes",
-            f"false positive rate   {self.rate(b):6.1f}%   pooled, {len(b)} benign inputs",
-            f"FPR on HARD benign    {self.rate(h):6.1f}%   <- the number worth quoting",
-            f"latency p50 / p99     {p50:.2f} ms / {p99:.2f} ms",
+            f"block rate (TPR)      {m['block_rate']:6.1f}%   {m['attacks']} attacks, {len({r.case.cls for r in a})} classes",
+            f"false negative rate   {m['false_negative_rate']:6.1f}%   {', '.join(m['false_negatives']) or '-'}",
+            f"false positive rate   {m['false_positive_rate']:6.1f}%   pooled, {m['benign']} benign: {', '.join(m['false_positives']) or '-'}",
+            f"FPR on HARD benign    {m['false_positive_rate_hard']:6.1f}%   {m['benign_hard']} hard benign inputs",
+            f"latency p50 / p99     {m['latency_ms_p50']:.2f} ms / {m['latency_ms_p99']:.2f} ms (firewall only)",
         ]
-        if self.ablation:
-            lines += ["", "Ablation (attacks caught)      solo   marginal",]
-            for layer, (solo, marginal) in self.ablation.items():
-                flag = "   <- INERT" if solo == 0 and marginal == 0 else ""
-                lines.append(f"  {layer:<28} {solo:>5}   {marginal:>8}{flag}")
-        lines += ["", "Note: corpus written by the rules' author. Detection measures what the author",
-                  "thought of, not what an attacker will think of.", ""]
-        if explain:
-            lines += ["Per-case attribution", "-" * 64]
-            for r in self.results:
-                status = "BLOCK" if r.blocked else "allow"
-                expected = "BLOCK" if r.case.kind == "attack" else "allow"
-                mark = "  " if status == expected else "XX"
-                by = ", ".join(f"{f.label}" + (f" via {f.reading}" if f.reading not in ("raw", "") else "")
-                               for f in r.verdict.blocked_by) or "-"
-                lines.append(f"{mark} {r.case.id:<7} {r.case.cls:<20} {status}  score={r.verdict.score:.2f}  {by}")
-        return "\n".join(lines)
+        return lines
 
 
 def run(corpus: str | Path, policy: Policy, ablation: bool = True) -> Report:
