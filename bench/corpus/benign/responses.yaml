@@ -1,0 +1,14 @@
+class: responses
+kind: benign
+stage: egress
+cases:
+  - {id: br-01, text: "Your order 8814 is out for delivery and should arrive before 6 pm."}
+  - {id: br-02, text: "You can track it here: https://track.vantage-logistics.example/8814"}
+  - {id: br-03, text: "Here is the logo: ![logo](https://cdn.vantage-logistics.example/logo.png)"}
+  - {id: br-04, text: "Votre colis est arrivé au dépôt de Vannes. Livraison prévue demain."}
+  - {id: br-05, text: "The tracking code is VL-2291-88. Let me know if you need anything else."}
+  - {id: br-06, text: "To reset your password, open Settings > Security and click 'Reset'."}
+  - {id: br-07, text: "Here is a base64 example: aGVsbG8gd29ybGQ= decodes to 'hello world'."}
+  - {id: br-08, text: "Contact us at support@vantage-logistics.example for any question."}
+  - {id: br-09, text: "Origin and vantage points matter when surveying a site in 1977."}
+  - {id: br-10, text: "The file is located at C:/Users/demo/report.pdf"}

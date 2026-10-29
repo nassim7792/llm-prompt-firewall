@@ -1,0 +1,9 @@
+class: tools_benign
+kind: benign
+stage: tool
+cases:
+  - {id: bt-01, tainted: false, tool: lookup_order, args: {order_id: "8814"}}
+  - {id: bt-02, tainted: true, tool: lookup_order, args: {order_id: "8814"}}
+  - {id: bt-03, tainted: false, tool: send_email, args: {to: "support@vantage-logistics.example", body: "Thanks"}}
+  - {id: bt-04, tainted: false, tool: refund, args: {order_id: "8814", amount: 20.0}, confirmed: true}
+  - {id: bt-05, tainted: true, tool: set_status, args: {order_id: "8814", status: "delivered"}}

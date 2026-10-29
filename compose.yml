@@ -1,0 +1,16 @@
+services:
+  promptfw:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      PROMPTFW_POLICY: /app/config/policy.example.yaml
+      PROMPTFW_AUDIT_PATH: /app/logs/audit.jsonl
+      # PROMPTFW_UPSTREAM_URL: https://api.openai.com   # uncomment to use a real model
+      # OPENAI_API_KEY: ${OPENAI_API_KEY}
+    volumes:
+      - ./logs:/app/logs
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]

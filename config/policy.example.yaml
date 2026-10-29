@@ -1,0 +1,37 @@
+# promptfw policy. Copy, edit, and pass with --policy or PROMPTFW_POLICY.
+id: my-app
+
+# Layers to run. Remove one to see what it was doing (verdicts record "layer-disabled").
+layers: [normalize, ingress, provenance, toolauth, egress]
+
+# Scored findings (ingress, normalize, secrets, PII) are combined with a noisy-OR.
+# Invariant findings (nonce forgery, tainted tool call, canary leak, unknown URL) always block.
+block_threshold: 0.6
+user_ingress_factor: 0.7   # USER spans weigh less than DATA spans: a user may give instructions
+strict_data: false         # true = any ingress finding in DATA becomes a hard block
+disabled_rules: []         # e.g. [IN-003] if it is noisy on your documents
+
+# Egress
+canaries: [VANTAGE-7731-ORION]          # secrets that must never leave, in any encoding (>= 8 alnum chars)
+allowed_hosts: [vantage-logistics.example]  # suffix match: covers sub-domains
+enforce_url_allowlist: true
+detect_secrets: true
+detect_pii: true
+
+# Tools: the model requests, the firewall authorizes. Unknown tools are refused (fail closed).
+forbidden_effects: [delete]
+tools:
+  - name: lookup_order
+    effects: [read]
+    args: {order_id: str}
+    required: [order_id]
+  - name: send_email
+    effects: [send]
+    guards: [no_untrusted_influence]   # refused once a DATA span entered the context
+    args: {to: str, body: str}
+    required: [to, body]
+  - name: refund
+    effects: [spend]
+    guards: [user_confirmed]
+    args: {order_id: str, amount: float}
+    required: [order_id, amount]
