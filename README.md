@@ -782,7 +782,6 @@ Ces limites sont documentées volontairement : un outil de sécurité doit indiq
 | *Taint* différencié par origine | Autoriser certains outils après lecture d'une source interne de confiance, tout en restant strict pour les sources publiques. Un contexte mixte doit rester refusé |
 | Modèle de confiance multi-tours | Suivre l'influence d'un contenu tiers sur les réponses précédentes du modèle |
 | Validation de sortie structurée (JSON Schema) | Couvrir le risque LLM05 (*Improper Output Handling*) |
-| Règles en arabe et en darija (écriture arabe et arabizi) | Étendre la couverture linguistique de `ingress` |
 | Canaries dérivés par session (HMAC) | Identifier la session ou le client à l'origine d'une fuite |
 | Générateur d'attaques composées | Combiner automatiquement les techniques d'évasion pour découvrir des contournements absents du corpus |
 | Agent réel via Ollama, en option | Vérifier que les verdicts du pare-feu sont identiques face à un modèle réel et face à l'agent simulé |
