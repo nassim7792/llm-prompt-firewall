@@ -12,6 +12,8 @@ from promptfw.tools import Effect, Tool
 
 LAYERS = ("normalize", "ingress", "provenance", "toolauth", "egress")
 NON_TEXT_MODES = ("block_untrusted", "block", "allow")
+TRUST_LEVELS = ("trusted", "untrusted")
+ASSISTANT_MODES = ("user", "data")
 MIN_CANARY_ALNUM = 8  # a canary shorter than this after stripping would match by accident
 
 
@@ -55,6 +57,16 @@ class Policy:
     #   block: refused everywhere      allow: recorded only (INFO)
     non_text_content: str = "block_untrusted"
 
+    # Authorization: role -> permissions. A tool with `permission` is allowed only if one of
+    # the principal's roles grants it.
+    roles: dict[str, frozenset[str]] = field(default_factory=dict)
+    # Trust per DATA channel ("kb": "trusted"). Unknown channels are untrusted. Only
+    # no_untrusted_influence reads this: trusted DATA is still fenced and inspected.
+    origin_trust: dict[str, str] = field(default_factory=dict)
+    # Proxy: how to read an assistant turn that follows untrusted DATA in the history.
+    #   user (default, known compromise) | data (stricter: the turn may carry the payload forward)
+    assistant_after_data: str = "user"
+
     def __post_init__(self) -> None:
         unknown = set(self.enabled_layers) - set(LAYERS)
         if unknown:
@@ -66,12 +78,26 @@ class Policy:
                 raise PolicyError(f"{name} must be positive")
         if self.non_text_content not in NON_TEXT_MODES:
             raise PolicyError(f"non_text_content must be one of {NON_TEXT_MODES}")
+        bad = {k: v for k, v in self.origin_trust.items() if v not in TRUST_LEVELS}
+        if bad:
+            raise PolicyError(f"origin_trust values must be one of {TRUST_LEVELS}: {bad}")
+        if self.assistant_after_data not in ASSISTANT_MODES:
+            raise PolicyError(f"assistant_after_data must be one of {ASSISTANT_MODES}")
+        for t in self.tools.values():
+            if t.permission and not any(t.permission in perms for perms in self.roles.values()):
+                raise PolicyError(f"tool {t.name!r} requires permission {t.permission!r} that no role grants")
         for c in self.canaries:
             if sum(ch.isalnum() for ch in c) < MIN_CANARY_ALNUM:
                 raise PolicyError(f"canary too short once stripped to alphanumerics: {c!r}")
 
     def layer_enabled(self, name: str) -> bool:
         return name in self.enabled_layers
+
+    def permissions_of(self, roles: frozenset[str]) -> frozenset[str]:
+        return frozenset().union(*(self.roles.get(r, frozenset()) for r in roles))
+
+    def is_trusted_channel(self, channel: str) -> bool:
+        return self.origin_trust.get(channel) == "trusted"
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Policy":
@@ -94,6 +120,9 @@ class Policy:
             max_total_chars=int(raw.get("max_total_chars", 200_000)),
             max_output_chars=int(raw.get("max_output_chars", 50_000)),
             non_text_content=str(raw.get("non_text_content", "block_untrusted")),
+            roles={r: frozenset(p) for r, p in (raw.get("roles") or {}).items()},
+            origin_trust={str(k): str(v) for k, v in (raw.get("origin_trust") or {}).items()},
+            assistant_after_data=str(raw.get("assistant_after_data", "user")),
         )
 
     @classmethod

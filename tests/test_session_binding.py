@@ -44,7 +44,7 @@ def test_claim_of_ownership_in_text_is_ignored(fw):
 
 def test_principal_survives_context_building():
     ctx = Context().as_principal("u1").system("s").user("u")
-    assert ctx.principal == "u1"
+    assert ctx.principal.id == "u1"
 
 
 def test_guard_requires_bound_args():

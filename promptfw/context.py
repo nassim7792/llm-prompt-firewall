@@ -55,17 +55,33 @@ def new_nonce() -> str:
 
 
 @dataclass(frozen=True)
+class Principal:
+    """Authenticated identity of the human. Set by the APPLICATION from its own session
+    (cookie, token...), never derived from text: "this is my account" proves nothing."""
+
+    id: str
+    roles: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        if not self.id or not self.id.strip():
+            raise ValueError("a principal needs a non-empty id")
+        object.__setattr__(self, "roles", frozenset(self.roles))
+
+
+@dataclass(frozen=True)
 class Context:
     """Immutable: every builder method returns a new Context."""
 
     spans: tuple[Span, ...] = ()
     nonce: str = field(default_factory=new_nonce)
-    # Authenticated identity of the human, set by the APPLICATION from its own session
-    # (cookie, token...). Never derived from text: "this is my account" proves nothing.
-    principal: str | None = None
+    principal: Principal | None = None
 
-    def as_principal(self, user_id: str) -> "Context":
-        return replace(self, principal=user_id)
+    def __post_init__(self) -> None:
+        if isinstance(self.principal, str):  # convenience: Context(principal="alice")
+            object.__setattr__(self, "principal", Principal(self.principal))
+
+    def as_principal(self, user_id: str, roles: tuple[str, ...] | frozenset[str] = ()) -> "Context":
+        return replace(self, principal=Principal(user_id, frozenset(roles)))
 
     @property
     def tainted_by(self) -> tuple[Origin, ...]:
