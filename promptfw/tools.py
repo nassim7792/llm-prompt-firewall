@@ -19,6 +19,7 @@ class Guard(str, Enum):
     NO_UNTRUSTED_INFLUENCE = "no_untrusted_influence"  # refused once any DATA span is in the context
     USER_CONFIRMED = "user_confirmed"                  # refused until the host app confirms
     ARGS_ALLOWLISTED = "args_allowlisted"              # argument values must be in an allowlist
+    ARGS_BOUND_TO_SESSION = "args_bound_to_session"    # target object must belong to the authenticated user
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,14 @@ class Tool:
     args: dict[str, type] = field(default_factory=dict)        # declared arguments and their type
     required: frozenset[str] = frozenset()
     allowlists: dict[str, frozenset[str]] = field(default_factory=dict)
+    bound_args: frozenset[str] = frozenset()   # args that must equal Context.principal
+
+    def __post_init__(self) -> None:
+        if Guard.ARGS_BOUND_TO_SESSION in self.guards and not self.bound_args:
+            raise ValueError(f"tool {self.name!r}: args_bound_to_session needs at least one bound_args entry")
+        unknown = self.bound_args - self.args.keys()
+        if unknown:
+            raise ValueError(f"tool {self.name!r}: bound_args not declared in args: {sorted(unknown)}")
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Tool":
@@ -40,6 +49,7 @@ class Tool:
             args={k: types[v] for k, v in (raw.get("args") or {}).items()},
             required=frozenset(raw.get("required", [])),
             allowlists={k: frozenset(v) for k, v in (raw.get("allowlists") or {}).items()},
+            bound_args=frozenset(raw.get("bound_args", [])),
         )
 
 

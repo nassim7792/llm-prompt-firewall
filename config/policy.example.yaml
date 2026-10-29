@@ -35,3 +35,12 @@ tools:
     guards: [user_confirmed]
     args: {order_id: str, amount: float}
     required: [order_id, amount]
+  # Account-scoped action: the target account must be the authenticated user's (anti-BOLA).
+  # This is the check that was missing in the Meta AI / Instagram takeovers of May 2026.
+  # In proxy mode the identity comes from the X-PromptFW-Principal header, set by YOUR backend.
+  - name: change_recovery_email
+    effects: [write]
+    guards: [args_bound_to_session, user_confirmed]
+    args: {account: str, email: str}
+    required: [account, email]
+    bound_args: [account]

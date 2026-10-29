@@ -7,3 +7,6 @@ cases:
   - {id: bt-03, tainted: false, tool: send_email, args: {to: "support@vantage-logistics.example", body: "Thanks"}}
   - {id: bt-04, tainted: false, tool: refund, args: {order_id: "8814", amount: 20.0}, confirmed: true}
   - {id: bt-05, tainted: true, tool: set_status, args: {order_id: "8814", status: "delivered"}}
+  - {id: bt-06, principal: alice_b, tool: change_recovery_email, args: {account: "alice_b", email: "alice@new.example"}}
+  - {id: bt-07, principal: alice_b, tool: change_recovery_email, args: {account: "@Alice_B", email: "alice@new.example"}}
+  - {id: bt-08, principal: alice_b, tool: reset_password, args: {account: "alice_b"}}

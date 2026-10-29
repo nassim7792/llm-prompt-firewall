@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org)
 [![OWASP](https://img.shields.io/badge/OWASP-LLM01%20%7C%20LLM02%20%7C%20LLM06%20%7C%20LLM07-000000)](https://genai.owasp.org)
-[![Tests](https://img.shields.io/badge/tests-69-8B5CF6)](#tests)
+[![Tests](https://img.shields.io/badge/tests-79-8B5CF6)](#tests)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 > Un pare-feu qui **ne cherche pas à lire dans les pensées de l'attaquant**. Il considère le modèle comme non fiable et impose des invariants autour de lui. Le contenu tiers est encadré par un nonce aléatoire par requête, les appels d'outils sont *autorisés* par le pare-feu au lieu d'être simplement demandés par le modèle, et les secrets enregistrés sont recherchés en sortie à travers tous les encodages réversibles. L'inspection du texte existe aussi, mais elle est **scorée** et présentée comme incomplète.
@@ -30,7 +30,7 @@ La détection par règles (FR + EN) relève le coût des attaques copiées-coll�
 | `normalize` | signal | Caractères *tag* Unicode (ASCII smuggling), zero-width, bidi, homoglyphes, NFKC, base64/base32/hex/percent **y compris au milieu d'une phrase**. Signale chaque transformation |
 | `ingress` | **scorée** | Règles FR/EN (override d'instructions, jailbreak, extraction du prompt système, exfiltration, coercition d'outil, injection indirecte) et marqueurs de template (`<\|im_start\|>`, `[INST]`…). Pondérée selon la provenance |
 | `provenance` | invariant | Chaque span DATA est encadré par un nonce de 64 bits tiré d'un CSPRNG. Si le nonce apparaît dans DATA, le blocage est immédiat |
-| `toolauth` | invariant | Taint (`no_untrusted_influence`), confirmation utilisateur, allowlist d'arguments, types, effets interdits. Un outil inconnu est refusé (*fail closed*) |
+| `toolauth` | invariant | Taint (`no_untrusted_influence`), confirmation utilisateur, allowlist d'arguments, types, effets interdits, **liaison à la session** (`args_bound_to_session` : le compte ciblé doit être celui de l'utilisateur authentifié, anti-BOLA). Un outil inconnu est refusé (*fail closed*) |
 | `egress` | invariant + scorée | Canary retrouvé après décodage, rot13, inversion ou suppression des séparateurs. Allowlist d'hôtes et images markdown. **En plus :** secrets (AWS, clés privées, tokens, JWT) et PII (e-mail, téléphone FR, IBAN, carte vérifiée par Luhn) |
 
 ```
@@ -77,9 +77,38 @@ Indirect injection asking for a tool call
   no firewall        : reply='' tools=['send_email']   <- SECRET LEAKED
   full firewall      : BLOCK before model  by ingress/EX-002, ingress/IN-001
   ingress bypassed   : BLOCK after model   by egress/canary-leak, toolauth/tainted-action
+Account takeover through the support assistant (Meta AI / Instagram, May 2026)
+  session: logged in as attacker_42, asks to change the e-mail of @sephora
+  no firewall        : tools=change_recovery_email({'account': 'sephora', ...})   <- ACCOUNT TAKEN OVER
+  full firewall      : BLOCK after model   by toolauth/arg-not-session-bound
+  ingress bypassed   : BLOCK after model   by toolauth/arg-not-session-bound
+  same user, own acc : ALLOW  tool call authorised: change_recovery_email
 ```
 
-La troisième ligne illustre la thèse du projet. Même quand l'attaquant passe sous les règles, les invariants bloquent l'**effet** de l'attaque.
+La ligne « ingress bypassed » illustre la thèse du projet. Même quand l'attaquant passe sous les règles, les invariants bloquent l'**effet** de l'attaque.
+
+## Cas réel : les prises de contrôle de comptes Instagram via Meta AI (mai 2026)
+
+Fin mai 2026, des comptes Instagram de grande valeur ont été détournés via l'assistant IA du support Meta. L'attaquant, connecté à son propre compte, demandait à l'assistant de remplacer l'e-mail de récupération d'un **autre** compte par le sien, puis recevait le lien de réinitialisation du mot de passe. Meta a désactivé ces fonctions en urgence le 29 mai.
+
+L'injection de prompt n'était que le moyen de transmettre la demande. La faille de fond était un **défaut d'autorisation au niveau de l'objet (BOLA)** : rien ne vérifiait que le compte modifié appartenait à la personne qui le demandait.
+
+`promptfw` applique ce contrôle dans la couche `toolauth`, avec la garde `args_bound_to_session` :
+
+```yaml
+- name: change_recovery_email
+  effects: [write]
+  guards: [args_bound_to_session, user_confirmed]
+  args: {account: str, email: str}
+  bound_args: [account]        # doit être égal à l'utilisateur authentifié
+```
+
+- L'identité vient de la **session de l'application** (`Context.as_principal(...)` en bibliothèque, en-tête `X-PromptFW-Principal` posé par le backend en mode proxy), **jamais du texte** : « c'est mon compte » ne prouve rien.
+- La comparaison suit les règles de la plateforme (casse et `@` ignorés). `alice_b_` reste différent de `alice_b`.
+- Sans session authentifiée, l'action est refusée (*fail closed*).
+- La décision ne dépend pas de la formulation de la demande. Une paraphrase ne la contourne donc pas.
+
+C'est une **défense en profondeur** autour de l'IA. Elle ne remplace pas le contrôle d'autorisation côté serveur, que l'API appelée par l'assistant doit faire elle aussi.
 
 ### CLI
 
@@ -125,6 +154,7 @@ promptfw proxy --upstream https://api.openai.com --audit logs/audit.jsonl  # vra
 - Une requête bloquée renvoie **HTTP 200** au format OpenAI avec `finish_reason: "content_filter"`, pour qu'un client existant ne plante pas.
 - Un canary aléatoire est injecté dans le prompt système de chaque requête. S'il ressort dans la réponse, le prompt système a fuité (LLM07).
 - Les réponses en streaming sont mises en tampon, inspectées, puis rejouées en SSE.
+- L'en-tête `X-PromptFW-Principal` transmet l'identité de l'utilisateur authentifié, pour les outils liés à la session. Il doit être posé par **ton backend**, et le proxy ne doit pas être joignable directement par les utilisateurs.
 - Points d'accès : `/v1/chat/completions`, `/v1/inspect`, `/v1/egress`, `/health`, `/metrics`.
 
 Pour lancer le proxy avec Docker : `docker compose up --build` (conteneur en lecture seule, utilisateur non root, `cap_drop: ALL`).
@@ -137,16 +167,16 @@ promptfw bench --explain  # quelle couche et quelle règle ont attrapé chaque c
 ```
 
 ```
-detection rate         100.0%   100 attacks, 12 classes
-false positive rate      3.1%   pooled, 65 benign inputs
+detection rate         100.0%   107 attacks, 13 classes
+false positive rate      2.9%   pooled, 68 benign inputs
 FPR on HARD benign       6.7%   <- the number worth quoting
-latency p50 / p99      0.50 ms / 1.84 ms
+latency p50 / p99      0.69 ms / 3.48 ms
 
 Ablation (attacks caught)      solo   marginal
   normalize                        2          0
   ingress                         63         59
   provenance                       6          4
-  toolauth                        13         11
+  toolauth                        20         18
   egress                          22         20
 ```
 
@@ -168,7 +198,7 @@ Ablation (attacks caught)      solo   marginal
 
 ```
 promptfw/
-  context.py        Trust (SYSTEM/USER/DATA), Origin, Context immuable, taint dérivé
+  context.py        Trust (SYSTEM/USER/DATA), Origin, Context immuable, taint dérivé, principal (session)
   verdict.py        Severity, Finding (invariant vs scoré), Verdict
   policy.py         Politique YAML : seuils, couches, canaries, hôtes, outils
   normalize.py      Lectures anti-évasion (clôture bornée de transformations inverses)
@@ -179,14 +209,14 @@ promptfw/
   proxy.py          Proxy FastAPI compatible OpenAI
   audit.py          Journal JSONL sans contenu attaquant (HMAC des preuves)
   bench.py, cli.py, demo.py
-bench/corpus/       12 classes d'attaques, 6 classes bénignes (dont 2 « difficiles »)
-tests/              69 tests (pytest)
+bench/corpus/       13 classes d'attaques, 6 classes bénignes (dont 2 « difficiles »)
+tests/              79 tests (pytest)
 ```
 
 ## Tests
 
 ```bash
-pytest -q          # 69 tests
+pytest -q          # 79 tests
 ruff check promptfw tests
 ```
 

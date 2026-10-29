@@ -1,8 +1,9 @@
 """toolauth: INVARIANT. The model asks, the firewall answers.
 
 The decision never reads the model's stated reason or the payload that influenced it.
-A tool is refused because the context is tainted, because the user did not confirm, or
-because an argument is outside its allowlist: facts, not guesses.
+A tool is refused because the context is tainted, because the user did not confirm,
+because an argument is outside its allowlist, or because the action targets an account
+that is not the authenticated user's: facts, not guesses.
 """
 
 from __future__ import annotations
@@ -60,4 +61,31 @@ class ToolAuthLayer:
                 if str(call.args.get(key)) not in allowed:
                     out.append(_block("arg-not-allowlisted", f"{call.name}.{key}",
                                       f"{call.name}.{key} outside its allowlist"))
+        if Guard.ARGS_BOUND_TO_SESSION in tool.guards:
+            out.extend(self._session_binding(call, ctx, tool.bound_args))
         return out
+
+    @staticmethod
+    def _session_binding(call: ToolCall, ctx: Context, bound_args: frozenset[str]) -> list[Finding]:
+        """The object an action targets must belong to the authenticated user (anti-BOLA).
+
+        This is the check that was missing in the Meta AI / Instagram takeovers of May 2026:
+        the assistant could change the recovery e-mail of an account the requester did not own.
+        The model's claim ("this is my account") is never consulted, only the session identity
+        set by the application.
+        """
+        if ctx.principal is None:
+            # Fail closed: no authenticated identity, no account-scoped action.
+            return [_block("no-principal", call.name, f"{call.name} needs an authenticated session")]
+        out: list[Finding] = []
+        for key in sorted(bound_args):
+            target = call.args.get(key)
+            if target is None or not same_identity(str(target), ctx.principal):
+                out.append(_block("arg-not-session-bound", f"{call.name}.{key}",
+                                  f"{call.name}.{key} targets an object the authenticated user does not own"))
+        return out
+
+
+def same_identity(a: str, b: str) -> bool:
+    """Usernames are compared the way the platform does: case-insensitive, '@' prefix ignored."""
+    return a.strip().lstrip("@").casefold() == b.strip().lstrip("@").casefold()

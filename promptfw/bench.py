@@ -109,6 +109,8 @@ def run_case(fw: Firewall, case: Case) -> Verdict:
     if case.stage == "egress":
         return fw.inspect_egress(AgentReply(apply_transform(c["text"], c.get("transform"))), ctx)
     if case.stage == "tool":
+        if c.get("principal"):
+            ctx = ctx.as_principal(str(c["principal"]))
         if c.get("tainted"):
             ctx = ctx.data("Customer ticket body.", Origin("ticket", case.id))
         call = ToolCall(c["tool"], dict(c.get("args") or {}), bool(c.get("confirmed")))

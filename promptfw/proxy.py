@@ -37,6 +37,9 @@ log = logging.getLogger("promptfw.proxy")
 WEAK_MODE_WARNING = ("proxy mode infers provenance from message roles: retrieved content pasted into a "
                      "user message is treated as USER, not DATA. Prefer the library API for RAG pipelines.")
 REFUSAL = "This request was blocked by the prompt injection firewall."
+# Authenticated user id, set by the APPLICATION BACKEND after it validated its own session.
+# The proxy must not be reachable by end users directly, or they could set this header themselves.
+PRINCIPAL_HEADER = "x-promptfw-principal"
 
 
 def _text(content: Any) -> str:
@@ -47,8 +50,8 @@ def _text(content: Any) -> str:
     return ""
 
 
-def infer_context(messages: list[dict[str, Any]]) -> Context:
-    ctx = Context()
+def infer_context(messages: list[dict[str, Any]], principal: str | None = None) -> Context:
+    ctx = Context(principal=principal or None)
     for i, m in enumerate(messages):
         role, text = m.get("role"), _text(m.get("content"))
         if not text:
@@ -191,7 +194,7 @@ def create_app(policy: Policy | None = None, upstream_url: str | None = None, au
         request_id = uuid.uuid4().hex[:16]
         stats["requests"] += 1
 
-        ctx = infer_context(messages)
+        ctx = infer_context(messages, request.headers.get(PRINCIPAL_HEADER))
         verdict = fw.inspect(ctx)
         audit.record("ingress", verdict, ctx, request_id)
         if verdict.blocked:

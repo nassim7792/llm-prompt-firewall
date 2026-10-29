@@ -23,6 +23,10 @@ def policy() -> Policy:
                                {"order_id": str, "status": str}, frozenset({"order_id", "status"}),
                                {"status": frozenset({"delivered", "delayed"})}),
             "delete_account": Tool("delete_account", frozenset({Effect.DELETE}), args={"user_id": str}),
+            "change_recovery_email": Tool("change_recovery_email", frozenset({Effect.WRITE}),
+                                          frozenset({Guard.ARGS_BOUND_TO_SESSION}),
+                                          {"account": str, "email": str}, frozenset({"account", "email"}),
+                                          bound_args=frozenset({"account"})),
         },
     )
 

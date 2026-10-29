@@ -29,3 +29,15 @@ tools:
   - name: delete_account
     effects: [delete]
     args: {user_id: str}
+  - name: change_recovery_email
+    effects: [write]
+    guards: [args_bound_to_session]
+    args: {account: str, email: str}
+    required: [account, email]
+    bound_args: [account]
+  - name: reset_password
+    effects: [write]
+    guards: [args_bound_to_session]
+    args: {account: str}
+    required: [account]
+    bound_args: [account]

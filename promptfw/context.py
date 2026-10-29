@@ -60,6 +60,12 @@ class Context:
 
     spans: tuple[Span, ...] = ()
     nonce: str = field(default_factory=new_nonce)
+    # Authenticated identity of the human, set by the APPLICATION from its own session
+    # (cookie, token...). Never derived from text: "this is my account" proves nothing.
+    principal: str | None = None
+
+    def as_principal(self, user_id: str) -> "Context":
+        return replace(self, principal=user_id)
 
     @property
     def tainted_by(self) -> tuple[Origin, ...]:
