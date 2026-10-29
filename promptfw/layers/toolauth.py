@@ -48,7 +48,7 @@ class ToolAuthLayer:
         if unexpected:
             out.append(_block("args-unexpected", call.name, f"undeclared argument(s) {sorted(unexpected)}"))
         for key, expected in tool.args.items():
-            if key in call.args and not isinstance(call.args[key], expected):
+            if key in call.args and not type_ok(call.args[key], expected):
                 out.append(_block("args-type", call.name, f"{key} should be {expected.__name__}"))
 
         if Guard.NO_UNTRUSTED_INFLUENCE in tool.guards and ctx.tainted:
@@ -84,6 +84,17 @@ class ToolAuthLayer:
                 out.append(_block("arg-not-session-bound", f"{call.name}.{key}",
                                   f"{call.name}.{key} targets an object the authenticated user does not own"))
         return out
+
+
+def type_ok(value: object, expected: type) -> bool:
+    """Strict JSON-style typing: bool is not an int, an integer is an acceptable float."""
+    if expected is bool:
+        return isinstance(value, bool)
+    if isinstance(value, bool):
+        return False
+    if expected is float:
+        return isinstance(value, (int, float))
+    return isinstance(value, expected)
 
 
 def same_identity(a: str, b: str) -> bool:

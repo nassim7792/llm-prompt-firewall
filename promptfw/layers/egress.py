@@ -31,8 +31,17 @@ from promptfw.verdict import Finding, Severity
 
 NAME = "egress"
 
-_URL = re.compile(r"(?i)(?<![\w/])(?:(?:https?|ftp|wss?):)?//([a-z0-9.-]+\.[a-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?[^\s)\"'<>]*")
+_HOST = r"([a-z0-9.-]+\.[a-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})"
+# Optional "user:pass@" before the host: in https://trusted.example@evil.example/ the real host is evil.example.
+_URL = re.compile(r"(?i)(?<![\w/])(?:(?:https?|ftp|wss?):)?//(?:[^\s/?#@]+@)?" + _HOST + r"(?::\d+)?[^\s)\"'<>]*")
+# Scheme-less link carrying data ("evil.example/r?d=..."): many chat clients auto-link these.
+# Only flagged when a path AND a query are present, to avoid "node.js" style false positives.
+_BARE = re.compile(r"(?i)(?<![\w@/.:-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24})(?::\d+)?/[^\s)\"'<>]*[?=&][^\s)\"'<>]*")
 _MD_IMAGE = re.compile(r"!\[[^\]]*\]\(\s*<?([^)\s>]+)")
+# Reference-style image: ![alt][ref] ... [ref]: https://host/...
+_MD_IMAGE_REF = re.compile(r"!\[([^\]]*)\]\[([^\]]*)\]")
+_MD_REF_DEF = re.compile(r"(?im)^\s*\[([^\]]+)\]:\s*<?(\S+?)>?(?:\s|$)")
+_HTML_IMG = re.compile(r"(?i)<img\b[^>]*?\bsrc\s*=\s*[\"']?([^\"'\s>]+)")
 
 SECRET_PATTERNS: list[tuple[str, str, float, re.Pattern]] = [
     ("aws-key", "AWS access key", 0.9, re.compile(r"\b(AKIA|ASIA)[0-9A-Z]{16}\b")),
@@ -63,6 +72,10 @@ def luhn_ok(number: str) -> bool:
             d = d * 2 - 9 if d > 4 else d * 2
         total += d
     return total % 10 == 0
+
+
+def _host(url: str) -> str:
+    return (urlparse(url if "//" in url else "//" + url).hostname or "").lower()
 
 
 def host_allowed(host: str, allowed: tuple[str, ...]) -> bool:
@@ -110,16 +123,18 @@ class EgressLayer:
     # -------------------------------------------------------------- URLs
     def _urls(self, text: str, where: str, policy: Policy) -> list[Finding]:
         findings: list[Finding] = []
-        image_hosts = {(urlparse(u if "//" in u else "//" + u).hostname or "").lower()
-                       for u in _MD_IMAGE.findall(canonical(text))}
+        canon = canonical(text)
+        # canonical() collapses newlines, which reference definitions need: scan both forms.
+        image_hosts = {_host(u) for u in self._image_urls(canon) + self._image_urls(text)}
         seen: set[str] = set()
-        for m in _URL.finditer(canonical(text)):
-            host = m.group(1).lower()
+        candidates = [(m.group(1).lower(), m.group(0)) for m in _URL.finditer(canon)]
+        candidates += [(m.group(1).lower(), m.group(0)) for m in _BARE.finditer(canon)]
+        for host, url in candidates:
             if host in seen or host_allowed(host, policy.allowed_hosts):
                 continue
             seen.add(host)
             is_image = host in image_hosts
-            has_query = "?" in m.group(0) or "=" in m.group(0)
+            has_query = "?" in url or "=" in url
             if is_image:
                 findings.append(Finding(NAME, "markdown-image", Severity.CRITICAL, True, 1.0,
                                         evidence=host, message=f"Auto-loaded image to non-allowlisted host in {where}"))
@@ -130,6 +145,17 @@ class EgressLayer:
                 findings.append(Finding(NAME, "url-with-query", Severity.MEDIUM, False, 0.4,
                                         evidence=host, message=f"URL with query string to unknown host in {where}"))
         return findings
+
+    @staticmethod
+    def _image_urls(text: str) -> list[str]:
+        """Every image the client may fetch automatically: inline, by reference, or HTML."""
+        urls = _MD_IMAGE.findall(text) + _HTML_IMG.findall(text)
+        defs = {label.strip().casefold(): url for label, url in _MD_REF_DEF.findall(text)}
+        for alt, ref in _MD_IMAGE_REF.findall(text):
+            key = (ref or alt).strip().casefold()   # "![alt][]" uses the alt text as reference
+            if key in defs:
+                urls.append(defs[key])
+        return urls
 
     # -------------------------------------------------------------- secrets / PII
     def _secrets(self, text: str, where: str) -> list[Finding]:

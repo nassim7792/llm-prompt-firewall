@@ -44,3 +44,13 @@ tools:
     args: {account: str, email: str}
     required: [account, email]
     bound_args: [account]
+
+# Resource limits (anti-DoS). Oversized inputs are refused before inspection (fail closed).
+max_span_chars: 50000
+max_total_chars: 200000
+max_output_chars: 50000
+
+# Proxy: non-text parts (images, audio, files) cannot be inspected by text rules.
+#   block_untrusted: refused inside tool results, recorded elsewhere (default)
+#   block: refused everywhere | allow: recorded only
+non_text_content: block_untrusted

@@ -80,11 +80,27 @@ class Firewall:
         decision, score = decide(findings, self.policy)
         return Verdict(decision, findings, score, (time.perf_counter() - start) * 1000, self.policy.id)
 
+    # ---------------------------------------------------------------- resource limits
+    def _input_limits(self, ctx: Context) -> list[Finding]:
+        p = self.policy
+        out = [Finding("firewall", "input-too-large", Severity.CRITICAL, True, 1.0, i,
+                       message=f"span of {len(s.text)} chars exceeds max_span_chars={p.max_span_chars}")
+               for i, s in enumerate(ctx.spans) if len(s.text) > p.max_span_chars]
+        total = sum(len(s.text) for s in ctx.spans)
+        if total > p.max_total_chars:
+            out.append(Finding("firewall", "input-too-large", Severity.CRITICAL, True, 1.0,
+                               message=f"context of {total} chars exceeds max_total_chars={p.max_total_chars}"))
+        return out
+
     # ---------------------------------------------------------------- before the model
-    def inspect(self, ctx: Context) -> Verdict:
+    def inspect(self, ctx: Context, extra_findings: tuple[Finding, ...] = ()) -> Verdict:
+        """`extra_findings`: signals computed outside the layers (e.g. by the proxy)."""
         start = time.perf_counter()
         p = self.policy
-        findings = [
+        too_big = self._input_limits(ctx)
+        if too_big:  # refuse before any expensive normalisation
+            return self._verdict([*extra_findings, *too_big], start)
+        findings = [*extra_findings,
             *self._run("normalize", lambda: self.normalize.inspect(ctx, p)),
             *self._run("ingress", lambda: self.ingress.inspect(ctx, p)),
             *self._run("provenance", lambda: self.provenance.inspect(ctx, p)),
@@ -95,6 +111,10 @@ class Firewall:
     def inspect_egress(self, reply: AgentReply, ctx: Context, extra_canaries: tuple[str, ...] = ()) -> Verdict:
         start = time.perf_counter()
         p = self.policy
+        size = len(reply.text) + sum(len(str(c.args)) for c in reply.tool_calls)
+        if size > p.max_output_chars:
+            return self._verdict([Finding("firewall", "output-too-large", Severity.CRITICAL, True, 1.0,
+                                          message=f"reply of {size} chars exceeds max_output_chars")], start)
         findings = [
             *self._run("toolauth", lambda: self.toolauth.inspect(reply, ctx, p)),
             *self._run("egress", lambda: self.egress.inspect(reply, ctx, p, extra_canaries)),

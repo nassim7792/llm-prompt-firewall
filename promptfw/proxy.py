@@ -31,7 +31,7 @@ from promptfw.firewall import FENCE_PREAMBLE, Firewall
 from promptfw.layers import fence_close, fence_open
 from promptfw.policy import Policy
 from promptfw.tools import AgentReply, ToolCall
-from promptfw.verdict import Verdict
+from promptfw.verdict import Finding, Severity, Verdict
 
 log = logging.getLogger("promptfw.proxy")
 WEAK_MODE_WARNING = ("proxy mode infers provenance from message roles: retrieved content pasted into a "
@@ -50,10 +50,49 @@ def _text(content: Any) -> str:
     return ""
 
 
+def _non_text_parts(content: Any) -> int:
+    if isinstance(content, list):
+        return sum(1 for p in content if not (isinstance(p, dict) and p.get("type") == "text"))
+    return 0
+
+
+def _history_tool_calls(m: dict[str, Any]) -> str:
+    """Tool calls the model made in earlier turns: their arguments are model output and may
+    carry an injected payload forward, so they are inspected like the rest of the turn."""
+    calls = list(m.get("tool_calls") or [])
+    if m.get("function_call"):
+        calls.append({"function": m["function_call"]})
+    parts = []
+    for tc in calls:
+        fn = tc.get("function") or {}
+        parts.append(f"{fn.get('name', '')}({fn.get('arguments', '')})")
+    return "\n".join(parts)
+
+
+def non_text_findings(messages: list[dict[str, Any]], policy: Policy) -> list[Finding]:
+    """Images, audio or files cannot be inspected by text rules (visual prompt injection)."""
+    out: list[Finding] = []
+    for i, m in enumerate(messages):
+        n = _non_text_parts(m.get("content"))
+        if not n:
+            continue
+        untrusted = m.get("role") in ("tool", "function")
+        if policy.non_text_content == "block" or (policy.non_text_content == "block_untrusted" and untrusted):
+            out.append(Finding("proxy", "non-text-content", Severity.CRITICAL, True, 1.0,
+                               message=f"message {i} ({m.get('role')}) carries {n} non-text part(s) that cannot be inspected"))
+        else:
+            out.append(Finding("proxy", "non-text-uninspected", Severity.INFO, False,
+                               message=f"message {i} ({m.get('role')}): {n} non-text part(s) forwarded uninspected"))
+    return out
+
+
 def infer_context(messages: list[dict[str, Any]], principal: str | None = None) -> Context:
     ctx = Context(principal=principal or None)
     for i, m in enumerate(messages):
         role, text = m.get("role"), _text(m.get("content"))
+        if role == "assistant":
+            history = _history_tool_calls(m)
+            text = "\n".join(t for t in (text, history) if t)
         if not text:
             continue
         if role in ("system", "developer"):
@@ -133,7 +172,9 @@ def as_sse(body: dict) -> StreamingResponse:
 
 
 def create_app(policy: Policy | None = None, upstream_url: str | None = None, audit_path: str | None = None,
-               mock_secret: str = "VANTAGE-7731-ORION") -> FastAPI:
+               mock_secret: str = "VANTAGE-7731-ORION", upstream_timeout: float = 60.0,
+               transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
+    """`transport` lets tests replace the network with an in-process fake upstream."""
     policy = policy or Policy()
     fw = Firewall(policy)
     audit = AuditLog(audit_path)
@@ -194,8 +235,10 @@ def create_app(policy: Policy | None = None, upstream_url: str | None = None, au
         request_id = uuid.uuid4().hex[:16]
         stats["requests"] += 1
 
+        if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
+            raise HTTPException(400, "invalid chat completion request")
         ctx = infer_context(messages, request.headers.get(PRINCIPAL_HEADER))
-        verdict = fw.inspect(ctx)
+        verdict = fw.inspect(ctx, tuple(non_text_findings(messages, policy)))
         audit.record("ingress", verdict, ctx, request_id)
         if verdict.blocked:
             return blocked(model, verdict, "ingress", stream, request_id)
@@ -210,14 +253,20 @@ def create_app(policy: Policy | None = None, upstream_url: str | None = None, au
                                                                    if os.getenv("OPENAI_API_KEY") else None):
                 headers["authorization"] = auth
             try:
-                async with httpx.AsyncClient(timeout=60) as client:
+                async with httpx.AsyncClient(timeout=upstream_timeout, transport=transport) as client:
                     r = await client.post(f"{upstream}/v1/chat/completions", json=fwd, headers=headers)
             except httpx.HTTPError as e:
                 raise HTTPException(502, f"upstream error: {type(e).__name__}") from None
             if r.status_code >= 400:
                 return JSONResponse(r.json() if r.headers.get("content-type", "").startswith("application/json")
                                     else {"error": r.text[:500]}, status_code=r.status_code)
-            upstream_body = r.json()
+            try:
+                upstream_body = r.json()
+                if not isinstance(upstream_body, dict) or not upstream_body.get("choices"):
+                    raise ValueError("no choices")
+            except ValueError:
+                # Never relay what could not be inspected.
+                raise HTTPException(502, "invalid upstream response") from None
             reply = parse_reply(upstream_body)
         else:
             mock_messages = [{**m, "content": _text(m.get("content"))} for m in protected]

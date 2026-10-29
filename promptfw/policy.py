@@ -11,6 +11,7 @@ import yaml
 from promptfw.tools import Effect, Tool
 
 LAYERS = ("normalize", "ingress", "provenance", "toolauth", "egress")
+NON_TEXT_MODES = ("block_untrusted", "block", "allow")
 MIN_CANARY_ALNUM = 8  # a canary shorter than this after stripping would match by accident
 
 
@@ -43,12 +44,28 @@ class Policy:
     tools: dict[str, Tool] = field(default_factory=dict)
     forbidden_effects: frozenset[Effect] = frozenset()
 
+    # Resource limits (anti-DoS): inspection cost grows linearly with input size, so oversized
+    # inputs are refused up front (invariant, fail closed) instead of being partially inspected.
+    max_span_chars: int = 50_000
+    max_total_chars: int = 200_000
+    max_output_chars: int = 50_000
+
+    # Proxy: images / audio / files cannot be inspected by text rules.
+    #   block_untrusted (default): refused inside tool results, recorded elsewhere
+    #   block: refused everywhere      allow: recorded only (INFO)
+    non_text_content: str = "block_untrusted"
+
     def __post_init__(self) -> None:
         unknown = set(self.enabled_layers) - set(LAYERS)
         if unknown:
             raise PolicyError(f"unknown layer(s): {sorted(unknown)}")
         if not 0 < self.block_threshold <= 1:
             raise PolicyError("block_threshold must be in (0, 1]")
+        for name in ("max_span_chars", "max_total_chars", "max_output_chars"):
+            if getattr(self, name) <= 0:
+                raise PolicyError(f"{name} must be positive")
+        if self.non_text_content not in NON_TEXT_MODES:
+            raise PolicyError(f"non_text_content must be one of {NON_TEXT_MODES}")
         for c in self.canaries:
             if sum(ch.isalnum() for ch in c) < MIN_CANARY_ALNUM:
                 raise PolicyError(f"canary too short once stripped to alphanumerics: {c!r}")
@@ -73,6 +90,10 @@ class Policy:
             detect_pii=bool(raw.get("detect_pii", True)),
             tools={t["name"]: Tool.from_dict(t) for t in raw.get("tools", [])},
             forbidden_effects=frozenset(Effect(e) for e in raw.get("forbidden_effects", [])),
+            max_span_chars=int(raw.get("max_span_chars", 50_000)),
+            max_total_chars=int(raw.get("max_total_chars", 200_000)),
+            max_output_chars=int(raw.get("max_output_chars", 50_000)),
+            non_text_content=str(raw.get("non_text_content", "block_untrusted")),
         )
 
     @classmethod
