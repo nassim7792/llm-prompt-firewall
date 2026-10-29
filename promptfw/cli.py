@@ -5,6 +5,7 @@
     promptfw demo                                                    # library walkthrough, offline
     promptfw bench   [--explain] [--no-ablation]
     promptfw proxy   [--host 127.0.0.1] [--port 8080] [--upstream URL] [--policy FILE]
+    promptfw token   USER [--role R]... [--ttl S] [--confirm TOOL ARGS_JSON]...
 
 Exit status: 0 when allowed, 1 when blocked, so it composes in shell pipelines.
 """
@@ -64,11 +65,29 @@ def cmd_bench(a: argparse.Namespace) -> int:
 
 
 def cmd_proxy(a: argparse.Namespace) -> int:
+    import os
+
     import uvicorn
 
     from promptfw.proxy import create_app
-    app = create_app(_policy(a.policy), upstream_url=a.upstream, audit_path=a.audit)
+    key = os.getenv("PROMPTFW_PRINCIPAL_KEY")
+    app = create_app(_policy(a.policy), upstream_url=a.upstream, audit_path=a.audit,
+                     principal_key=key.encode() if key else None)
     uvicorn.run(app, host=a.host, port=a.port, log_level="info")
+    return 0
+
+
+def cmd_token(a: argparse.Namespace) -> int:
+    """Mint a signed identity token (what the application backend would do)."""
+    import os
+
+    from promptfw.identity import mint
+    key = os.getenv("PROMPTFW_PRINCIPAL_KEY")
+    if not key:
+        print("PROMPTFW_PRINCIPAL_KEY is not set", file=sys.stderr)
+        return 2
+    confirm = [(tool, json.loads(args)) for tool, args in (a.confirm or [])]
+    print(mint(key.encode(), a.sub, tuple(a.role), a.ttl, confirm))
     return 0
 
 
@@ -108,6 +127,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--policy")
     p.add_argument("--audit", help="JSONL audit log path")
     p.set_defaults(fn=cmd_proxy)
+
+    p = sub.add_parser("token", help="mint a signed identity token (needs PROMPTFW_PRINCIPAL_KEY)")
+    p.add_argument("sub", help="user id")
+    p.add_argument("--role", action="append", default=[])
+    p.add_argument("--ttl", type=int, default=120, help="seconds (max 300)")
+    p.add_argument("--confirm", nargs=2, action="append", metavar=("TOOL", "ARGS_JSON"),
+                   help="pre-approve TOOL with exactly these arguments")
+    p.set_defaults(fn=cmd_token)
     return ap
 
 

@@ -18,6 +18,7 @@ import os
 import time
 import uuid
 from collections import Counter
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -26,8 +27,9 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from promptfw.agent import MockAgent
 from promptfw.audit import AuditLog
-from promptfw.context import Context, Origin, Trust
+from promptfw.context import Context, Origin, Principal, Trust
 from promptfw.firewall import FENCE_PREAMBLE, Firewall
+from promptfw.identity import ReplayGuard, TokenError, args_digest, verify
 from promptfw.layers import fence_close, fence_open
 from promptfw.policy import Policy
 from promptfw.tools import AgentReply, ToolCall
@@ -37,9 +39,12 @@ log = logging.getLogger("promptfw.proxy")
 WEAK_MODE_WARNING = ("proxy mode infers provenance from message roles: retrieved content pasted into a "
                      "user message is treated as USER, not DATA. Prefer the library API for RAG pipelines.")
 REFUSAL = "This request was blocked by the prompt injection firewall."
-# Authenticated user id, set by the APPLICATION BACKEND after it validated its own session.
-# The proxy must not be reachable by end users directly, or they could set this header themselves.
+# Identity of the end user, set by the APPLICATION BACKEND. With a principal key configured it
+# must be a signed token (see promptfw.identity); without one it is a plain user id that the
+# proxy trusts as-is, which is only acceptable if end users cannot reach the proxy.
 PRINCIPAL_HEADER = "x-promptfw-principal"
+UNSIGNED_WARNING = ("no principal key configured: X-PromptFW-Principal is trusted as a plain user id. "
+                    "Set PROMPTFW_PRINCIPAL_KEY to require signed identity tokens.")
 
 
 def _text(content: Any) -> str:
@@ -86,7 +91,7 @@ def non_text_findings(messages: list[dict[str, Any]], policy: Policy) -> list[Fi
     return out
 
 
-def infer_context(messages: list[dict[str, Any]], principal: str | None = None) -> Context:
+def infer_context(messages: list[dict[str, Any]], principal: str | Principal | None = None) -> Context:
     ctx = Context(principal=principal or None)
     for i, m in enumerate(messages):
         role, text = m.get("role"), _text(m.get("content"))
@@ -173,8 +178,9 @@ def as_sse(body: dict) -> StreamingResponse:
 
 def create_app(policy: Policy | None = None, upstream_url: str | None = None, audit_path: str | None = None,
                mock_secret: str = "VANTAGE-7731-ORION", upstream_timeout: float = 60.0,
-               transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
-    """`transport` lets tests replace the network with an in-process fake upstream."""
+               transport: httpx.AsyncBaseTransport | None = None, principal_key: bytes | None = None) -> FastAPI:
+    """`transport` lets tests replace the network with an in-process fake upstream.
+    `principal_key` (HMAC secret shared with the backend) turns on signed identity tokens."""
     policy = policy or Policy()
     fw = Firewall(policy)
     audit = AuditLog(audit_path)
@@ -182,7 +188,36 @@ def create_app(policy: Policy | None = None, upstream_url: str | None = None, au
     agent = MockAgent()
     stats: Counter[str] = Counter()
     app = FastAPI(title="promptfw", version="0.1.0")
+    replay = ReplayGuard()
     log.warning(WEAK_MODE_WARNING)
+    if not principal_key:
+        log.warning(UNSIGNED_WARNING)
+
+    def resolve_identity(header: str | None) -> tuple[Principal | None, set[tuple[str, str]], list[Finding]]:
+        """Returns (principal, confirmed (tool, args_sha256) pairs, findings)."""
+        if not header or not header.strip():
+            return None, set(), []
+        if not principal_key:
+            return Principal(header.strip()), set(), []
+        try:
+            payload = verify(header, principal_key)
+        except TokenError as e:
+            return None, set(), [Finding("proxy", "invalid-identity", Severity.CRITICAL, True, 1.0,
+                                         message=f"identity token rejected: {e}")]
+        jti = payload.get("jti")
+        if jti is not None and not replay.first_use(str(jti), float(payload["exp"])):
+            return None, set(), [Finding("proxy", "identity-replayed", Severity.CRITICAL, True, 1.0,
+                                         message="identity token already used")]
+        confirmed = {(c["tool"], c["args_sha256"]) for c in payload.get("confirm", [])}
+        return Principal(payload["sub"], frozenset(payload.get("roles", []))), confirmed, []
+
+    def apply_confirmations(reply: AgentReply, confirmed: set[tuple[str, str]]) -> AgentReply:
+        """A confirmation covers exactly one tool with exactly these arguments."""
+        if not confirmed:
+            return reply
+        calls = tuple(replace(c, user_confirmed=(c.name, args_digest(c.args)) in confirmed)
+                      for c in reply.tool_calls)
+        return replace(reply, tool_calls=calls)
     if upstream is None:
         log.warning("no upstream configured: answering with the offline mock agent")
 
@@ -237,8 +272,9 @@ def create_app(policy: Policy | None = None, upstream_url: str | None = None, au
 
         if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
             raise HTTPException(400, "invalid chat completion request")
-        ctx = infer_context(messages, request.headers.get(PRINCIPAL_HEADER))
-        verdict = fw.inspect(ctx, tuple(non_text_findings(messages, policy)))
+        principal, confirmed, id_findings = resolve_identity(request.headers.get(PRINCIPAL_HEADER))
+        ctx = infer_context(messages, principal)
+        verdict = fw.inspect(ctx, (*id_findings, *non_text_findings(messages, policy)))
         audit.record("ingress", verdict, ctx, request_id)
         if verdict.blocked:
             return blocked(model, verdict, "ingress", stream, request_id)
@@ -274,6 +310,7 @@ def create_app(policy: Policy | None = None, upstream_url: str | None = None, au
             reply = agent.reply(mock_messages)
             upstream_body = completion(model, reply)
 
+        reply = apply_confirmations(reply, confirmed)
         out_verdict = fw.inspect_egress(reply, ctx, (canary, mock_secret) if not upstream else (canary,))
         audit.record("egress", out_verdict, ctx, request_id)
         if out_verdict.blocked:
@@ -288,6 +325,8 @@ def create_app(policy: Policy | None = None, upstream_url: str | None = None, au
 def app_from_env() -> FastAPI:
     """Entry point for `uvicorn promptfw.proxy:app_from_env --factory`."""
     path = os.getenv("PROMPTFW_POLICY")
+    key = os.getenv("PROMPTFW_PRINCIPAL_KEY")
     return create_app(Policy.load(path) if path else Policy(),
                       upstream_url=os.getenv("PROMPTFW_UPSTREAM_URL"),
-                      audit_path=os.getenv("PROMPTFW_AUDIT_PATH"))
+                      audit_path=os.getenv("PROMPTFW_AUDIT_PATH"),
+                      principal_key=key.encode() if key else None)
