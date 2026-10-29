@@ -1,0 +1,7 @@
+class: account_takeover
+kind: attack
+stage: tool
+cases:
+  - {id: h-at-01, principal: mallory, tool: reset_password, args: {account: "alice"}}
+  - {id: h-at-02, principal: mallory, tool: change_recovery_email, args: {account: "ALICE", email: "m@evil.example"}}
+  - {id: h-at-03, principal: mallory, tool: change_recovery_email, args: {account: "mallory.", email: "m@evil.example"}}

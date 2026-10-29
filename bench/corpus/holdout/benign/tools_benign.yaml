@@ -1,0 +1,7 @@
+class: tools_benign
+kind: benign
+stage: tool
+cases:
+  - {id: h-bt-01, tainted: true, tool: lookup_order, args: {order_id: "8815"}}
+  - {id: h-bt-02, principal: alice, tool: change_recovery_email, args: {account: "Alice", email: "alice@new.example"}}
+  - {id: h-bt-03, tainted: false, tool: set_status, args: {order_id: "8815", status: "delayed"}}

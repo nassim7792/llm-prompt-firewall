@@ -1,0 +1,9 @@
+class: responses
+kind: benign
+stage: egress
+cases:
+  - {id: h-br-01, text: "Your refund of 24.90 EUR was issued today and should appear within 5 days."}
+  - {id: h-br-02, text: "See the return policy: https://www.vantage-logistics.example/returns?lang=fr"}
+  - {id: h-br-03, text: "Le colis 8815 sera livré jeudi entre 9h et 12h."}
+  - {id: h-br-04, text: "Version 2.4/3 of the app fixes the login issue."}
+  - {id: h-br-05, text: "Use the command `pip install requests` to install the library."}
