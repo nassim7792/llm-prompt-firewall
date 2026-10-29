@@ -827,12 +827,6 @@ Dockerfile, compose.yml
 
 ---
 
-## Références
-
-- OWASP, [Top 10 for LLM Applications 2025](https://genai.owasp.org/llm-top-10/)
-- K. Greshake et al., *Not what you've signed up for: Compromising Real-World LLM-Integrated Applications with Indirect Prompt Injection*, 2023
-- APIsec Research Labs, [*Rethinking the Meta Instagram Takeover*](https://labs.apisec.ai/research/articles/meta-instagram-takeover-not-prompt-injection/), 2026
-
 ## Licence
 
 Distribué sous licence MIT. Voir [LICENSE](LICENSE).
