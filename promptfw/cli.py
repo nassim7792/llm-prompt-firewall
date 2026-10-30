@@ -5,6 +5,7 @@
     promptfw demo                                                    # library walkthrough, offline
     promptfw bench   [--explain] [--no-ablation]
     promptfw proxy   [--host 127.0.0.1] [--port 8080] [--upstream URL] [--policy FILE]
+    promptfw fuzz    [--n 300] [--seed 0] [--candidates DIR]
     promptfw token   USER [--role R]... [--ttl S] [--confirm TOOL ARGS_JSON]...
 
 Exit status: 0 when allowed, 1 when blocked, so it composes in shell pipelines.
@@ -77,6 +78,12 @@ def cmd_proxy(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fuzz(a: argparse.Namespace) -> int:
+    from promptfw.eval.generate import run as fuzz
+    print(fuzz(Firewall(_policy(a.policy)), a.n, a.seed, a.candidates))
+    return 0
+
+
 def cmd_token(a: argparse.Namespace) -> int:
     """Mint a signed identity token (what the application backend would do)."""
     import os
@@ -127,6 +134,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--policy")
     p.add_argument("--audit", help="JSONL audit log path")
     p.set_defaults(fn=cmd_proxy)
+
+    p = sub.add_parser("fuzz", help="generate composed ingress attacks and report what gets through")
+    p.add_argument("--n", type=int, default=300)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--policy")
+    p.add_argument("--candidates", help="directory where misses are written for manual review")
+    p.set_defaults(fn=cmd_fuzz)
 
     p = sub.add_parser("token", help="mint a signed identity token (needs PROMPTFW_PRINCIPAL_KEY)")
     p.add_argument("sub", help="user id")

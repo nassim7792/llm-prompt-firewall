@@ -42,10 +42,12 @@ LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"
 _B64 = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}|[A-Za-z0-9_-]{24,}")
 _B32 = re.compile(r"\b[A-Z2-7]{16,}={0,6}")
 _HEX = re.compile(r"\b(?:[0-9a-fA-F]{2}){8,}\b")
-_PCT = re.compile(r"(?:%[0-9a-fA-F]{2}){3,}")
+_PCT = re.compile(r"%[0-9a-fA-F]{2}")  # decoded when it occurs 3+ times, even non-contiguously
 # "i.g.n.o.r.e", "i g n o r e": 3+ letters joined by the SAME separator (back-reference),
 # so that word boundaries ("i g n o r e  a l l") survive the collapse.
 _SPACED = re.compile(r"\b[a-z0-9]([ .\-_*/])[a-z0-9](?:\1[a-z0-9])+\b")
+
+_SEP_RUN = re.compile(r"(?:[A-Za-z0-9+/=%][-._ ]){3,}[A-Za-z0-9+/=%]")
 
 INGRESS_BUDGET = 48
 EGRESS_BUDGET = 96
@@ -68,8 +70,11 @@ class UnicodeReport:
 
 # ---------------------------------------------------------------- single transforms
 
-def canonical(text: str, report: UnicodeReport | None = None) -> str:
-    """Decode tag chars, drop invisibles, fold confusables, NFKC, casefold, collapse spaces."""
+def canonical(text: str, report: UnicodeReport | None = None, fold: bool = True) -> str:
+    """Decode tag chars, drop invisibles, fold confusables, NFKC, casefold, collapse spaces.
+
+    fold=False keeps the case and skips confusables: used before decoding, because
+    case-folding a base64 blob hidden in tag characters would make it undecodable."""
     out: list[str] = []
     in_flag = False
     for ch in text:
@@ -95,7 +100,7 @@ def canonical(text: str, report: UnicodeReport | None = None) -> str:
             if report:
                 report.bidi += 1
             continue
-        if ch in CONFUSABLES:
+        if fold and ch in CONFUSABLES:
             if report:
                 report.confusables += 1
             ch = CONFUSABLES[ch]
@@ -104,14 +109,22 @@ def canonical(text: str, report: UnicodeReport | None = None) -> str:
     folded = unicodedata.normalize("NFKC", joined)
     if report and folded != joined:
         report.nfkc_changed = True
-    return re.sub(r"\s+", " ", folded.casefold()).strip()
+    return re.sub(r"\s+", " ", folded.casefold() if fold else folded).strip()
+
+
+def _invisible(ch: str) -> bool:
+    return ch in ZERO_WIDTH or ch in BIDI or TAG_START <= ord(ch) <= TAG_END
 
 
 def _printable(s: str) -> bool:
     if len(s) < 4:
         return False
-    ok = sum(ch.isprintable() or ch in "\r\n\t" for ch in s)
-    return ok / len(s) >= 0.9 and sum(ch.isalpha() for ch in s) >= 3
+    # Invisible characters count as acceptable: a payload interleaved with zero-width or tag
+    # characters and then base64-encoded must still be decoded.
+    ok = sum(ch.isprintable() or ch in "\r\n\t" or _invisible(ch) for ch in s)
+    letters = sum(ch.isalpha() or (TAG_START <= ord(ch) <= TAG_END and chr(ord(ch) - TAG_START).isalpha())
+                  for ch in s)
+    return ok / len(s) >= 0.9 and letters >= 3
 
 
 def _try_b64(token: str) -> str | None:
@@ -160,7 +173,7 @@ def unwrap_embedded(text: str) -> dict[str, str]:
         new = pattern.sub(repl, text)
         if changed:
             results[kind] = new
-    if _PCT.search(text):
+    if len(_PCT.findall(text)) >= 3:
         results["percent"] = unquote(text)
     return results
 
@@ -182,6 +195,7 @@ def strip_separators(text: str) -> str:
 
 def _step(text: str, mode: str) -> dict[str, str]:
     nxt: dict[str, str] = {"canonical": canonical(text)}
+    nxt["unicode"] = canonical(text, fold=False)
     nxt["leetspeak"] = nxt["canonical"].translate(LEET)
     nxt["despaced"] = despace(nxt["canonical"])
     # Before whitespace is collapsed, a double space still separates spaced-out words.
@@ -191,6 +205,9 @@ def _step(text: str, mode: str) -> dict[str, str]:
         nxt["rot13"] = codecs.decode(text, "rot13")
         nxt["reversed"] = text[::-1]
         nxt["stripped"] = strip_separators(text)
+        # Rejoin runs of single characters separated by one separator ("V-k-F-O..."), keeping
+        # case and the surrounding prose apart, so a dashed base64 blob after "Sure! " decodes.
+        nxt["rejoined"] = _SEP_RUN.sub(lambda m: re.sub(r"[-._ ]", "", m.group(0)), text)
     return nxt
 
 

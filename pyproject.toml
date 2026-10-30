@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.4"]
+dev = ["pytest>=8", "ruff>=0.4", "hypothesis>=6.100"]
 
 [project.scripts]
 promptfw = "promptfw.cli:main"
@@ -29,6 +29,7 @@ include = ["promptfw*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: exhaustive tests (run by default; deselect with -m 'not slow')"]
 
 [tool.ruff]
 line-length = 120
