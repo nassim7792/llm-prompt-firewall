@@ -18,6 +18,7 @@ import argparse
 import json
 import sys
 from dataclasses import replace
+from pathlib import Path
 
 from promptfw.context import Context, Origin
 from promptfw.firewall import Firewall
@@ -62,8 +63,22 @@ def cmd_bench(a: argparse.Namespace) -> int:
     from promptfw.bench import default_corpus, run
     root = default_corpus()
     policy = Policy.load(a.policy) if a.policy else Policy.load(root.parent / "policy.yaml")
-    print(run(root, policy, ablation=not a.no_ablation).render(explain=a.explain))
-    return 0
+    report = run(root, policy, ablation=not a.no_ablation)
+    print(report.render(explain=a.explain))
+    if a.json:
+        Path(a.json).write_text(json.dumps(report.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+    if a.csv:
+        report.write_csv(a.csv)
+    # Non-regression gates (CI). Thresholds apply to the DEV split, never to the holdout.
+    dev = report.subset("dev").metrics()
+    failures = []
+    if a.fail_dev_tpr_below is not None and dev["block_rate"] < a.fail_dev_tpr_below:
+        failures.append(f"dev block rate {dev['block_rate']} % < {a.fail_dev_tpr_below} %")
+    if a.fail_hard_fpr_above is not None and dev["false_positive_rate_hard"] > a.fail_hard_fpr_above:
+        failures.append(f"dev hard FPR {dev['false_positive_rate_hard']} % > {a.fail_hard_fpr_above} %")
+    for f in failures:
+        print(f"REGRESSION: {f}", file=sys.stderr)
+    return 1 if failures else 0
 
 
 def cmd_proxy(a: argparse.Namespace) -> int:
@@ -85,9 +100,18 @@ def cmd_eval(a: argparse.Namespace) -> int:
     from promptfw.eval.run import Target, run_and_report
     target = Target(a.target, a.base_url, a.model, os.getenv(a.api_key_env) if a.api_key_env else None, a.timeout)
     policy = Policy.load(a.policy)
-    _, md = run_and_report(a.scenarios, policy, target, a.repeat, a.out, progress=not a.quiet)
+    m, md = run_and_report(a.scenarios, policy, target, a.repeat, a.out, progress=not a.quiet)
     print(md)
-    return 0
+    failures = []
+    if a.fail_asr_with_above is not None and (m["asr_with_firewall"] or 0) > a.fail_asr_with_above:
+        failures.append(f"ASR with firewall {m['asr_with_firewall']} % > {a.fail_asr_with_above} %")
+    if a.fail_fpr_above is not None and (m["false_positive_rate"] or 0) > a.fail_fpr_above:
+        failures.append(f"false positive rate {m['false_positive_rate']} % > {a.fail_fpr_above} %")
+    if m["errors"] and a.fail_on_errors:
+        failures.append(f"{len(m['errors'])} run error(s)")
+    for f in failures:
+        print(f"REGRESSION: {f}", file=sys.stderr)
+    return 1 if failures else 0
 
 
 def cmd_fuzz(a: argparse.Namespace) -> int:
@@ -137,6 +161,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("bench", help="run the benchmark corpus")
     p.add_argument("--explain", action="store_true")
     p.add_argument("--no-ablation", action="store_true")
+    p.add_argument("--json", help="write the full report as JSON")
+    p.add_argument("--csv", help="write one row per case as CSV")
+    p.add_argument("--fail-dev-tpr-below", type=float, help="exit 1 if the dev block rate is below this %%")
+    p.add_argument("--fail-hard-fpr-above", type=float, help="exit 1 if the dev hard-benign FPR is above this %%")
     p.add_argument("--policy")
     p.set_defaults(fn=cmd_bench)
 
@@ -159,6 +187,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--policy", default="eval/policy.yaml")
     p.add_argument("--out", default="eval/results", help="directory for JSON/CSV/Markdown reports")
     p.add_argument("--quiet", action="store_true")
+    p.add_argument("--fail-asr-with-above", type=float, help="exit 1 if the ASR with firewall exceeds this %%")
+    p.add_argument("--fail-fpr-above", type=float, help="exit 1 if the false positive rate exceeds this %%")
+    p.add_argument("--fail-on-errors", action="store_true", help="exit 1 if any run errored")
     p.set_defaults(fn=cmd_eval)
 
     p = sub.add_parser("fuzz", help="generate composed ingress attacks and report what gets through")

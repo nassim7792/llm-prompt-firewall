@@ -144,12 +144,12 @@ class Report:
             out.setdefault(r.case.cls, []).append(r)
         return out
 
-    def latency(self) -> tuple[float, float]:
+    def latency(self) -> tuple[float, float, float]:
         lat = sorted(r.verdict.elapsed_ms for r in self.results)
         if not lat:
-            return 0.0, 0.0
-        p99 = lat[min(len(lat) - 1, int(len(lat) * 0.99))]
-        return statistics.median(lat), p99
+            return 0.0, 0.0, 0.0
+        q = lambda f: lat[min(len(lat) - 1, int(len(lat) * f))]  # noqa: E731
+        return statistics.median(lat), q(0.95), q(0.99)
 
     def subset(self, split: str) -> "Report":
         return Report([r for r in self.results if r.case.split == split])
@@ -157,14 +157,14 @@ class Report:
     def metrics(self) -> dict:
         """Definitions: attacks blocked = true positives; benign blocked = false positives."""
         a, b, h = self.attacks(), self.benign(), self.benign(hard=True)
-        p50, p99 = self.latency()
+        p50, p95, p99 = self.latency()
         return {
             "attacks": len(a), "benign": len(b), "benign_hard": len(h),
             "block_rate": round(self.rate(a), 2),               # TPR
             "false_negative_rate": round(100 - self.rate(a), 2) if a else 0.0,
             "false_positive_rate": round(self.rate(b), 2),
             "false_positive_rate_hard": round(self.rate(h), 2),
-            "latency_ms_p50": round(p50, 3), "latency_ms_p99": round(p99, 3),
+            "latency_ms_p50": round(p50, 3), "latency_ms_p95": round(p95, 3), "latency_ms_p99": round(p99, 3),
             "false_negatives": [r.case.id for r in a if not r.blocked],
             "false_positives": [r.case.id for r in b if r.blocked],
         }
@@ -197,6 +197,29 @@ class Report:
                              f"score={r.verdict.score:.2f}  {by}")
         return "\n".join(lines)
 
+    def to_dict(self) -> dict:
+        return {
+            "splits": {s: {**self.subset(s).metrics(), "classes": self.subset(s)._classes()}
+                       for s in SPLITS if self.subset(s).results},
+            "ablation": {k: {"solo": a, "marginal": b} for k, (a, b) in self.ablation.items()},
+        }
+
+    def _classes(self) -> dict:
+        return {cls: {"kind": rs[0].case.kind, "hard": rs[0].case.hard, "cases": len(rs),
+                      "blocked": sum(r.blocked for r in rs),
+                      "rate": round(self.rate(rs), 2)} for cls, rs in sorted(self.by_class().items())}
+
+    def write_csv(self, path: str | Path) -> None:
+        import csv
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["split", "id", "class", "kind", "hard", "stage", "blocked", "expected_block", "score",
+                        "blocked_by", "elapsed_ms"])
+            for r in self.results:
+                w.writerow([r.case.split, r.case.id, r.case.cls, r.case.kind, r.case.hard, r.case.stage, r.blocked,
+                            r.case.kind == "attack", round(r.verdict.score, 3),
+                            ";".join(f.label for f in r.verdict.blocked_by), round(r.verdict.elapsed_ms, 3)])
+
     def _render_split(self) -> list[str]:
         lines = ["Attack classes (block rate)"]
         for cls, rs in sorted(self.by_class().items()):
@@ -217,7 +240,7 @@ class Report:
             f"false negative rate   {m['false_negative_rate']:6.1f}%   {', '.join(m['false_negatives']) or '-'}",
             f"false positive rate   {m['false_positive_rate']:6.1f}%   pooled, {m['benign']} benign: {', '.join(m['false_positives']) or '-'}",
             f"FPR on HARD benign    {m['false_positive_rate_hard']:6.1f}%   {m['benign_hard']} hard benign inputs",
-            f"latency p50 / p99     {m['latency_ms_p50']:.2f} ms / {m['latency_ms_p99']:.2f} ms (firewall only)",
+            f"latency p50/p95/p99   {m['latency_ms_p50']:.2f} / {m['latency_ms_p95']:.2f} / {m['latency_ms_p99']:.2f} ms (firewall only)",
         ]
         return lines
 

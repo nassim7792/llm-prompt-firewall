@@ -14,5 +14,15 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check promptfw tests
       - run: pytest -q
-      - run: promptfw bench
-      - run: promptfw eval --target mock --out /tmp/eval --quiet
+      # Non-regression gates: dev split only (the holdout is never used as a target).
+      - run: promptfw bench --fail-dev-tpr-below 95 --fail-hard-fpr-above 15 --json bench-report.json --csv bench-report.csv
+      # Mock target: validates the measurement chain, not security.
+      - run: promptfw eval --target mock --out eval-report --quiet --fail-asr-with-above 0 --fail-fpr-above 0 --fail-on-errors
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-py${{ matrix.python }}
+          path: |
+            bench-report.json
+            bench-report.csv
+            eval-report/
