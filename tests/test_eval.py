@@ -45,3 +45,24 @@ def test_mock_run_produces_consistent_reports(tmp_path):
     assert stems == {".json", ".csv", ".md"}
     data = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
     assert len(data["runs"]) == m["attack_runs"] + m["benign_runs"]
+
+
+def _run(stage, blocked, direct_ms, protected_ms, kind="attack", tools=()):
+    from promptfw.eval.run import Run
+    s = Scenario("x", "f", kind, "", [], {"type": "secret_leak"}, list(tools))
+    return Run(s, 0, False, False, blocked, [], direct_ms, protected_ms, None, stage, None)
+
+
+def test_latency_ignores_runs_blocked_before_the_model():
+    from promptfw.eval.run import metrics
+    runs = [_run(None, False, 500.0, 520.0), _run(None, False, 700.0, 710.0),
+            _run("ingress", True, 600.0, 3.0), _run("ingress", True, 650.0, 2.0)]
+    lat = metrics(runs)["latency_ms"]
+    assert lat["comparable_runs"] == 2
+    assert lat["overhead_p50"] > 0
+
+
+def test_block_stage_split():
+    from promptfw.eval.run import metrics
+    m = metrics([_run("ingress", True, 1.0, 1.0), _run("egress", True, 1.0, 1.0), _run(None, False, 1.0, 1.0)])
+    assert (m["blocked_ingress"], m["blocked_egress"], m["block_rate"]) == (33.3, 33.3, 66.7)
