@@ -17,6 +17,9 @@ import codecs
 import re
 import unicodedata
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from urllib.parse import unquote
 
@@ -211,9 +214,37 @@ def _step(text: str, mode: str) -> dict[str, str]:
     return nxt
 
 
+# Several layers compute the same readings of the same span within one inspection
+# (ingress and provenance both use the "ingress" closure). The cache lives only for the
+# duration of one Firewall.inspect / inspect_egress call: nothing is shared between
+# requests, so no attacker-controlled text outlives its request and memory stays bounded
+# by the size limits of the policy.
+_CACHE: ContextVar[dict[tuple[str, str, int], tuple[Reading, ...]] | None] = ContextVar("promptfw_readings", default=None)
+
+
+@contextmanager
+def reading_cache() -> Iterator[None]:
+    token = _CACHE.set({})
+    try:
+        yield
+    finally:
+        _CACHE.reset(token)
+
+
 def readings(text: str, mode: str = "ingress", budget: int | None = None) -> list[Reading]:
     """Breadth-first closure of inverse transforms, bounded by `budget` readings."""
     budget = budget or (EGRESS_BUDGET if mode == "egress" else INGRESS_BUDGET)
+    cache = _CACHE.get()
+    key = (text, mode, budget)
+    if cache is not None and key in cache:
+        return list(cache[key])
+    result = _closure(text, mode, budget)
+    if cache is not None:
+        cache[key] = tuple(result)
+    return result
+
+
+def _closure(text: str, mode: str, budget: int) -> list[Reading]:
     seen: dict[str, str] = {text: "raw"}
     queue: deque[tuple[str, str]] = deque([(text, "raw")])
     while queue and len(seen) < budget:

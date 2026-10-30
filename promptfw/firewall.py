@@ -25,6 +25,7 @@ from promptfw.layers import (
     fence_close,
     fence_open,
 )
+from promptfw.normalize import reading_cache
 from promptfw.policy import Policy
 from promptfw.tools import AgentReply
 from promptfw.verdict import Decision, Finding, Severity, Verdict
@@ -100,11 +101,12 @@ class Firewall:
         too_big = self._input_limits(ctx)
         if too_big:  # refuse before any expensive normalisation
             return self._verdict([*extra_findings, *too_big], start)
-        findings = [*extra_findings,
-            *self._run("normalize", lambda: self.normalize.inspect(ctx, p)),
-            *self._run("ingress", lambda: self.ingress.inspect(ctx, p)),
-            *self._run("provenance", lambda: self.provenance.inspect(ctx, p)),
-        ]
+        with reading_cache():  # layers share the readings of a span within this call only
+            findings = [*extra_findings,
+                *self._run("normalize", lambda: self.normalize.inspect(ctx, p)),
+                *self._run("ingress", lambda: self.ingress.inspect(ctx, p)),
+                *self._run("provenance", lambda: self.provenance.inspect(ctx, p)),
+            ]
         return self._verdict(findings, start)
 
     # ---------------------------------------------------------------- after the model
