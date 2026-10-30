@@ -8,3 +8,6 @@ dist/
 .venv/
 logs/
 .env
+.hypothesis/
+mutants/
+.mutmut-cache

@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.4", "hypothesis>=6.100"]
+dev = ["pytest>=8", "ruff>=0.4", "hypothesis>=6.100", "mutmut>=3.2"]
 
 [project.scripts]
 promptfw = "promptfw.cli:main"
@@ -38,3 +38,16 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "I"]
 ignore = ["E501", "E731"]
+
+# Mutation testing on the security-critical decision code (run: mutmut run && mutmut results).
+# The property/slow tests are excluded to keep one mutant's test run under a few seconds.
+[tool.mutmut]
+paths_to_mutate = [
+    "promptfw/layers/toolauth.py",
+    "promptfw/layers/provenance.py",
+    "promptfw/identity.py",
+    "promptfw/firewall.py",
+]
+tests_dir = ["tests/"]
+pytest_add_cli_args = ["--ignore=tests/property", "-x", "-q", "-p", "no:cacheprovider"]
+also_copy = ["promptfw/", "bench/", "eval/", "config/"]
