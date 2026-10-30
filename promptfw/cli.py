@@ -5,6 +5,7 @@
     promptfw demo                                                    # library walkthrough, offline
     promptfw bench   [--explain] [--no-ablation]
     promptfw proxy   [--host 127.0.0.1] [--port 8080] [--upstream URL] [--policy FILE]
+    promptfw eval    [--target mock|openai] [--base-url URL] [--model M] [--repeat N] [--out DIR]
     promptfw fuzz    [--n 300] [--seed 0] [--candidates DIR]
     promptfw token   USER [--role R]... [--ttl S] [--confirm TOOL ARGS_JSON]...
 
@@ -78,6 +79,17 @@ def cmd_proxy(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_eval(a: argparse.Namespace) -> int:
+    import os
+
+    from promptfw.eval.run import Target, run_and_report
+    target = Target(a.target, a.base_url, a.model, os.getenv(a.api_key_env) if a.api_key_env else None, a.timeout)
+    policy = Policy.load(a.policy)
+    _, md = run_and_report(a.scenarios, policy, target, a.repeat, a.out, progress=not a.quiet)
+    print(md)
+    return 0
+
+
 def cmd_fuzz(a: argparse.Namespace) -> int:
     from promptfw.eval.generate import run as fuzz
     print(fuzz(Firewall(_policy(a.policy)), a.n, a.seed, a.candidates))
@@ -134,6 +146,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--policy")
     p.add_argument("--audit", help="JSONL audit log path")
     p.set_defaults(fn=cmd_proxy)
+
+    p = sub.add_parser("eval", help="end-to-end evaluation: ASR with/without firewall, false positives, latency")
+    p.add_argument("--target", choices=["mock", "openai"], default="mock")
+    p.add_argument("--base-url", help="OpenAI-compatible endpoint, e.g. http://localhost:11434")
+    p.add_argument("--model", default="mock")
+    p.add_argument("--api-key-env", help="name of the environment variable holding the API key")
+    p.add_argument("--repeat", type=int, default=1)
+    p.add_argument("--timeout", type=float, default=120.0)
+    p.add_argument("--scenarios", default="eval/scenarios")
+    p.add_argument("--policy", default="eval/policy.yaml")
+    p.add_argument("--out", default="eval/results", help="directory for JSON/CSV/Markdown reports")
+    p.add_argument("--quiet", action="store_true")
+    p.set_defaults(fn=cmd_eval)
 
     p = sub.add_parser("fuzz", help="generate composed ingress attacks and report what gets through")
     p.add_argument("--n", type=int, default=300)

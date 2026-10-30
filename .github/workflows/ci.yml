@@ -15,3 +15,4 @@ jobs:
       - run: ruff check promptfw tests
       - run: pytest -q
       - run: promptfw bench
+      - run: promptfw eval --target mock --out /tmp/eval --quiet
