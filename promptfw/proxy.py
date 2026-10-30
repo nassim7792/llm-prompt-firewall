@@ -261,7 +261,8 @@ def create_app(policy: Policy | None = None, upstream_url: str | None = None, au
             return None, set(), [Finding("proxy", "identity-replayed", Severity.CRITICAL, True, 1.0,
                                          message="identity token already used")]
         confirmed = {(c["tool"], c["args_sha256"]) for c in payload.get("confirm", [])}
-        return Principal(payload["sub"], frozenset(payload.get("roles", []))), confirmed, []
+        return (Principal(payload["sub"], frozenset(payload.get("roles", [])), payload.get("attrs", {})),
+                confirmed, [])
 
     def apply_confirmations(reply: AgentReply, confirmed: set[tuple[str, str]]) -> AgentReply:
         """A confirmation covers exactly one tool with exactly these arguments."""

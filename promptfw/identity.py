@@ -6,7 +6,7 @@ X-PromptFW-Principal header, as a short-lived token signed with a key it shares 
 the firewall (HMAC-SHA256). An end user who can reach the proxy cannot forge it.
 
     token   = base64url(payload_json) "." base64url(HMAC-SHA256(key, base64url(payload_json)))
-    payload = {"sub": "alice", "roles": ["customer"], "exp": 1793312000, "jti": "<random>",
+    payload = {"sub": "alice", "roles": ["customer"], "attrs": {"tenant": "acme"}, "exp": 1793312000, "jti": "<random>",
                "confirm": [{"tool": "refund", "args_sha256": "<hex>"}]}
 
 * `exp` is mandatory and bounded (MAX_TTL_S): a stolen token is only useful briefly.
@@ -59,10 +59,12 @@ def sign(payload: dict[str, Any], key: bytes) -> str:
 
 
 def mint(key: bytes, sub: str, roles: tuple[str, ...] = (), ttl_s: int = 120,
-         confirm: list[tuple[str, dict[str, Any]]] | None = None) -> str:
+         confirm: list[tuple[str, dict[str, Any]]] | None = None, attrs: dict[str, str] | None = None) -> str:
     """Helper for backends and tests."""
     payload: dict[str, Any] = {"sub": sub, "roles": list(roles), "exp": int(time.time()) + ttl_s,
                                "jti": secrets.token_hex(12)}
+    if attrs:
+        payload["attrs"] = dict(attrs)
     if confirm:
         payload["confirm"] = [{"tool": t, "args_sha256": args_digest(a)} for t, a in confirm]
     return sign(payload, key)
@@ -88,6 +90,9 @@ def verify(token: str, key: bytes, now: float | None = None) -> dict[str, Any]:
         raise TokenError("missing sub")
     if not isinstance(roles, list) or not all(isinstance(r, str) for r in roles):
         raise TokenError("roles must be a list of strings")
+    attrs = payload.get("attrs", {})
+    if not isinstance(attrs, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in attrs.items()):
+        raise TokenError("attrs must be an object of strings")
     if not isinstance(exp, (int, float)) or isinstance(exp, bool):
         raise TokenError("missing exp")
     if exp <= now:

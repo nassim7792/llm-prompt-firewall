@@ -73,6 +73,10 @@ class Tool:
     bound_args: frozenset[str] = frozenset()   # args that must equal Context.principal.id
     permission: str | None = None              # required permission, granted through Policy.roles
     constraints: dict[str, ArgConstraint] = field(default_factory=dict)
+    # Context conditions
+    allowed_origins: frozenset[str] | None = None   # DATA channels this tool tolerates (None: no restriction)
+    requires_attributes: dict[str, str] = field(default_factory=dict)  # principal attribute must equal value
+    attribute_args: dict[str, str] = field(default_factory=dict)       # arg -> principal attribute it must equal
 
     def __post_init__(self) -> None:
         if Guard.ARGS_BOUND_TO_SESSION in self.guards and not self.bound_args:
@@ -83,6 +87,9 @@ class Tool:
         unknown = self.constraints.keys() - self.args.keys()
         if unknown:
             raise ValueError(f"tool {self.name!r}: constraints on undeclared args: {sorted(unknown)}")
+        unknown = self.attribute_args.keys() - self.args.keys()
+        if unknown:
+            raise ValueError(f"tool {self.name!r}: attribute_args on undeclared args: {sorted(unknown)}")
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Tool":
@@ -97,6 +104,9 @@ class Tool:
             bound_args=frozenset(raw.get("bound_args", [])),
             permission=raw.get("permission"),
             constraints={k: ArgConstraint.from_dict(v) for k, v in (raw.get("constraints") or {}).items()},
+            allowed_origins=frozenset(raw["allowed_origins"]) if "allowed_origins" in raw else None,
+            requires_attributes={str(k): str(v) for k, v in (raw.get("requires_attributes") or {}).items()},
+            attribute_args={str(k): str(v) for k, v in (raw.get("attribute_args") or {}).items()},
         )
 
 

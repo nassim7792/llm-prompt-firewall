@@ -112,3 +112,10 @@ def test_token_replay_is_rejected():
 def test_unsigned_mode_keeps_plain_ids_but_grants_no_roles():
     body = ask(client(refund_upstream(), key=None), "bob")
     assert "toolauth/permission-denied" in body["promptfw"]["blocked_by"]
+
+
+def test_signed_attributes_reach_the_principal():
+    from promptfw.identity import verify
+    assert verify(mint(KEY, "bob", attrs={"tenant": "acme"}), KEY)["attrs"] == {"tenant": "acme"}
+    with pytest.raises(TokenError, match="attrs"):
+        verify(sign({"sub": "b", "exp": time.time() + 60, "attrs": {"tenant": 1}}, KEY), KEY)

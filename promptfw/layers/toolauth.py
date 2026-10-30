@@ -62,6 +62,13 @@ class ToolAuthLayer:
 
         if tool.permission:
             out.extend(self._permission(call, ctx, policy, tool.permission))
+        if tool.requires_attributes or tool.attribute_args:
+            out.extend(self._attributes(call, ctx, tool.requires_attributes, tool.attribute_args))
+        if tool.allowed_origins is not None:
+            outside = [o for o in ctx.tainted_by if o.channel not in tool.allowed_origins]
+            if outside:
+                out.append(_block("origin-not-allowed", call.name,
+                                  f"{call.name} not allowed after content from {', '.join(str(o) for o in outside)}"))
 
         if Guard.NO_UNTRUSTED_INFLUENCE in tool.guards:
             # A context mixing a trusted and an untrusted origin is untrusted.
@@ -88,6 +95,21 @@ class ToolAuthLayer:
             return [_block("permission-denied", call.name,
                            f"{call.name} requires permission {permission!r}, not granted to the principal's roles")]
         return []
+
+    @staticmethod
+    def _attributes(call: ToolCall, ctx: Context, required: dict[str, str], bound: dict[str, str]) -> list[Finding]:
+        """ABAC: the principal must carry the required attributes, and some arguments must
+        equal one of its attributes (e.g. tenant_id == principal.attributes["tenant"])."""
+        if ctx.principal is None:
+            return [_block("no-principal", call.name, f"{call.name} needs an authenticated session")]
+        attrs = ctx.principal.attributes
+        out = [_block("attribute-mismatch", f"{call.name}:{k}", f"{call.name} requires attribute {k}={v}")
+               for k, v in required.items() if attrs.get(k) != v]
+        for arg, attr in bound.items():
+            if attr not in attrs or str(call.args.get(arg)) != attrs[attr]:
+                out.append(_block("attribute-mismatch", f"{call.name}.{arg}",
+                                  f"{call.name}.{arg} must equal the principal attribute {attr!r}"))
+        return out
 
     @staticmethod
     def _session_binding(call: ToolCall, ctx: Context, bound_args: frozenset[str]) -> list[Finding]:

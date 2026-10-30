@@ -95,3 +95,48 @@ def test_policy_yaml_authorization_fields():
     })
     assert p.tools["refund"].constraints["amount"].max == 100
     assert p.permissions_of(frozenset({"agent"})) == {"refunds:create"}
+
+
+# ---------------------------------------------------------------- attributes (ABAC) and allowed origins
+ABAC = Policy(tools={
+    "export_invoices": Tool("export_invoices", frozenset({Effect.READ}), args={"tenant_id": str},
+                            requires_attributes={"plan": "enterprise"}, attribute_args={"tenant_id": "tenant"}),
+    "summarise_ticket": Tool("summarise_ticket", frozenset({Effect.WRITE}), args={"ticket": str},
+                             allowed_origins=frozenset({"ticket"})),
+})
+
+
+def abac(ctx, name, args):
+    v = Firewall(ABAC).inspect_egress(AgentReply("", (ToolCall(name, args),)), ctx)
+    return {f.rule for f in v.blocked_by}
+
+
+def test_attribute_bound_argument_prevents_cross_tenant_access():
+    ctx = Context().as_principal("bob", attributes={"tenant": "acme", "plan": "enterprise"})
+    assert abac(ctx, "export_invoices", {"tenant_id": "acme"}) == set()
+    assert abac(ctx, "export_invoices", {"tenant_id": "globex"}) == {"attribute-mismatch"}
+
+
+def test_required_attribute():
+    ctx = Context().as_principal("bob", attributes={"tenant": "acme", "plan": "free"})
+    assert abac(ctx, "export_invoices", {"tenant_id": "acme"}) == {"attribute-mismatch"}
+
+
+def test_attribute_conditions_need_a_principal():
+    assert abac(Context(), "export_invoices", {"tenant_id": "acme"}) == {"no-principal"}
+
+
+def test_allowed_origins_per_tool():
+    base = Context().as_principal("bob")
+    assert abac(base.data("Ticket body", Origin("ticket", "1")), "summarise_ticket", {"ticket": "1"}) == set()
+    assert abac(base.data("Web page", Origin("web", "x")), "summarise_ticket", {"ticket": "1"}) == {"origin-not-allowed"}
+    mixed = base.data("Ticket", Origin("ticket", "1")).data("Web", Origin("web", "x"))
+    assert abac(mixed, "summarise_ticket", {"ticket": "1"}) == {"origin-not-allowed"}
+
+
+def test_tool_yaml_context_conditions():
+    t = Tool.from_dict({"name": "t", "args": {"tenant_id": "str"}, "allowed_origins": ["kb"],
+                        "requires_attributes": {"plan": "pro"}, "attribute_args": {"tenant_id": "tenant"}})
+    assert t.allowed_origins == {"kb"} and t.attribute_args == {"tenant_id": "tenant"}
+    with pytest.raises(ValueError):
+        Tool("t", args={"a": str}, attribute_args={"b": "tenant"})

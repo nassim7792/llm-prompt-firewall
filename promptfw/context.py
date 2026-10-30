@@ -61,11 +61,14 @@ class Principal:
 
     id: str
     roles: frozenset[str] = frozenset()
+    # Attributes asserted by the application (tenant, country, plan...). Used by tool conditions.
+    attributes: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.id or not self.id.strip():
             raise ValueError("a principal needs a non-empty id")
         object.__setattr__(self, "roles", frozenset(self.roles))
+        object.__setattr__(self, "attributes", {str(k): str(v) for k, v in dict(self.attributes).items()})
 
 
 @dataclass(frozen=True)
@@ -80,8 +83,9 @@ class Context:
         if isinstance(self.principal, str):  # convenience: Context(principal="alice")
             object.__setattr__(self, "principal", Principal(self.principal))
 
-    def as_principal(self, user_id: str, roles: tuple[str, ...] | frozenset[str] = ()) -> "Context":
-        return replace(self, principal=Principal(user_id, frozenset(roles)))
+    def as_principal(self, user_id: str, roles: tuple[str, ...] | frozenset[str] = (),
+                     attributes: dict[str, str] | None = None) -> "Context":
+        return replace(self, principal=Principal(user_id, frozenset(roles), attributes or {}))
 
     @property
     def tainted_by(self) -> tuple[Origin, ...]:

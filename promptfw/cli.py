@@ -106,7 +106,8 @@ def cmd_token(a: argparse.Namespace) -> int:
         print("PROMPTFW_PRINCIPAL_KEY is not set", file=sys.stderr)
         return 2
     confirm = [(tool, json.loads(args)) for tool, args in (a.confirm or [])]
-    print(mint(key.encode(), a.sub, tuple(a.role), a.ttl, confirm))
+    attrs = dict(kv.split("=", 1) for kv in a.attr)
+    print(mint(key.encode(), a.sub, tuple(a.role), a.ttl, confirm, attrs))
     return 0
 
 
@@ -171,6 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("sub", help="user id")
     p.add_argument("--role", action="append", default=[])
     p.add_argument("--ttl", type=int, default=120, help="seconds (max 300)")
+    p.add_argument("--attr", action="append", default=[], metavar="KEY=VALUE", help="principal attribute")
     p.add_argument("--confirm", nargs=2, action="append", metavar=("TOOL", "ARGS_JSON"),
                    help="pre-approve TOOL with exactly these arguments")
     p.set_defaults(fn=cmd_token)
