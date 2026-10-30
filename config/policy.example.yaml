@@ -54,3 +54,10 @@ max_output_chars: 50000
 #   block_untrusted: refused inside tool results, recorded elsewhere (default)
 #   block: refused everywhere | allow: recorded only
 non_text_content: block_untrusted
+
+# Authorization (see README section 7.2). Uncomment and adapt.
+# roles:
+#   support_agent: [refunds:create]
+# origin_trust:
+#   kb: trusted                 # undeclared channels are untrusted
+# assistant_after_data: user     # "data": stricter reading of assistant turns after untrusted content
