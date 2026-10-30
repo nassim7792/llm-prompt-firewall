@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-proxy-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![OWASP](https://img.shields.io/badge/OWASP%20LLM-01%20%7C%2002%20%7C%2006%20%7C%2007-000000)](https://genai.owasp.org/llm-top-10/)
-[![Tests](https://img.shields.io/badge/tests-224-8B5CF6)](#12-tests-et-qualité)
+[![Tests](https://img.shields.io/badge/tests-238-8B5CF6)](#12-tests-et-qualité)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 `promptfw` est un pare-feu placé entre une application et un grand modèle de langage (LLM). Il contrôle ce qui entre dans le modèle et ce qui en sort, afin de limiter les conséquences d'une injection de prompt : fuite de secrets, exfiltration de données, appels d'outils non autorisés, prise de contrôle de comptes.
@@ -147,7 +147,7 @@ Chaque couche est exécutée dans un wrapper ([`promptfw/firewall.py`](promptfw/
 
 - si elle lève une exception, le verdict contient `layer-error` (invariant) et la requête est **bloquée**. Le message de l'exception n'est jamais repris, seul son type est conservé, car il pourrait contenir l'entrée de l'attaquant ;
 - si elle est désactivée par la politique, le verdict contient `layer-disabled`. On distingue ainsi « rien n'a été détecté » de « rien n'a été vérifié ».
-- avant toute analyse, la taille de chaque span, du contexte et de la réponse est comparée aux limites de la politique ; une entrée trop grande est refusée (`input-too-large`, `output-too-large`) au lieu d'être analysée partiellement. Le coût de la normalisation croît avec la taille du texte, ces limites bornent donc le temps de traitement.
+- avant toute analyse, la taille de chaque span, du contexte et de la réponse est comparée aux limites de la politique ; une entrée trop grande est refusée (`input-too-large`, `output-too-large`) au lieu d'être analysée partiellement. Le coût de la normalisation croît avec la taille du texte, ces limites bornent donc le temps de traitement. En mode proxy, une limitation de débit par client (nombre de requêtes et volume de caractères par minute) complète ces limites.
 
 ---
 
@@ -170,6 +170,8 @@ Une chaîne fixe de transformations (décoder, puis normaliser, puis comparer) �
 La couche `normalize` signale chaque transformation nécessaire. Les caractères *tag* sont le seul signal assez fort pour bloquer seul (score 0,65), car ils n'ont pratiquement aucun usage légitime dans du texte.
 
 La clôture a été mise à l'épreuve par des tests par propriétés (section 11) : le canary reste détecté pour 100 % des compositions de deux encodages et 99,5 % des compositions de trois. Ces tests ont conduit à ajouter une lecture qui conserve la casse (un bloc base64 caché dans des caractères *tag* devenait indécodable une fois mis en minuscules) et une lecture qui recolle les caractères séparés (`V-k-F-O…`).
+
+Les lectures d'un span sont mises en cache **le temps d'une seule inspection** : `ingress` et `provenance` partagent ainsi la même clôture au lieu de la recalculer. Le cache ne survit pas à la requête, ce qui évite de conserver du texte attaquant et borne la mémoire. Gain mesuré : environ −17 % de latence médiane sur le corpus et −29 % sur un span de 45 000 caractères (`bench/results/2026-10-30_p3_cache_latency.md`).
 
 ### 3.2 Inspection scorée du contenu (`ingress`)
 
@@ -328,6 +330,8 @@ Ces contrôles sont scorés et non invariants, car une réponse peut légitimeme
 
 Le journal ([`promptfw/audit.py`](promptfw/audit.py)) est au format JSON Lines. Il enregistre la décision, le score, la latence, la liste des findings et des informations structurelles sur les spans (niveau de confiance, longueur). Il ne contient **jamais** le texte de l'attaque, le secret ni la réponse du modèle. Les preuves et les références d'origine sont remplacées par une empreinte HMAC-SHA256 tronquée : deux attaques identiques produisent la même empreinte, ce qui permet de les corréler sans rendre le contenu lisible.
 
+La clé HMAC peut être persistante (`PROMPTFW_AUDIT_KEY`, ou `PROMPTFW_AUDIT_KEY_FILE`, créé avec les droits `0600` s'il n'existe pas) ; chaque enregistrement porte un `key_id` (empreinte de la clé), pour ne jamais comparer des empreintes calculées avec des clés différentes. Un chemin de journal non inscriptible fait échouer le démarrage plutôt que la première requête.
+
 L'objectif est d'éviter que le journal ne devienne lui-même un vecteur d'injection, par exemple s'il est relu ultérieurement par un outil d'analyse fondé sur un LLM.
 
 ### 3.9 Correspondance avec l'OWASP LLM Top 10 (2025)
@@ -358,7 +362,10 @@ L'objectif est d'éviter que le journal ne devienne lui-même un vecteur d'injec
 | Contrôle de sortie : canaries, URL, images, secrets, PII | `tests/test_egress.py` ; évaluation réelle |
 | Contenu non textuel, appels d'outils de l'historique | `tests/test_proxy.py` |
 | Proxy compatible OpenAI (JSON et SSE) | tests avec un faux serveur amont ; essais manuels et évaluation avec Ollama |
-| Journal d'audit sans contenu attaquant | `tests/test_audit.py` |
+| Journal d'audit sans contenu attaquant, clé persistante, `key_id` | `tests/test_audit.py` |
+| Limitation de débit par client (requêtes, coût d'analyse), HTTP 429 | `tests/test_ratelimit.py` |
+| Cache des lectures limité à une inspection | `tests/test_cache.py` (aucun verdict modifié) ; mesure de latence archivée |
+| Image Docker durcie et test de fumée | `scripts/docker_smoke.sh`, job `docker` de la CI |
 | Benchmark `dev` / `holdout`, ablation, export JSON/CSV | `tests/test_bench.py`, `test_reports.py` |
 | Générateur d'attaques composées (`promptfw fuzz`) | `tests/test_generate.py` |
 | Évaluation de bout en bout (ASR, blocage par étape, latence) | `tests/test_eval.py` ; deux exécutions réelles versionnées |
@@ -378,22 +385,20 @@ Chaque limite ci-dessous a été observée ou mesurée ; aucune protection de `p
 | Contrôle des outils partiellement éprouvé en réel | La famille `tool_coercion` n'a déclenché aucun appel d'outil dans les essais protégés |
 | Provenance en proxy | Un document inséré dans un message `user` sans marquage est traité comme `USER` |
 | Réponses antérieures de l'assistant | Relues comme `USER` par défaut ; un payload relayé peut passer (test dédié) |
-| Anti-rejeu en mémoire | Valable pour une seule instance du proxy |
+| Anti-rejeu et limitation de débit en mémoire | Valables pour une seule instance du proxy |
 | Secret HMAC partagé | Le backend et le pare-feu détiennent la même clé |
 | Contenu non textuel | Jamais inspecté : seulement refusé ou laissé passer selon la politique |
 | Portée des tests de mutation | 83,8 % sur le code de décision ; `normalize`, `ingress` et `egress` non couverts ; non exécuté en CI |
 | Échantillon d'évaluation | 17 scénarios d'attaque écrits par l'auteur, un seul modèle (3B), deux exécutions |
-| Image Docker | Jamais construite ni testée dans l'environnement de développement |
+| Image Docker | Les registres de conteneurs étaient inaccessibles depuis l'environnement de développement : l'image n'a pas été construite localement. Le script de test de fumée a été vérifié avec un double de `docker` ; sa première exécution réelle est le job `docker` de la CI |
 
 ### 4.3 Améliorations proposées
 
 | Amélioration | Intérêt |
 |---|---|
-| Limitation de débit par client et par coût d'analyse | Compléter les limites de taille contre la saturation |
-| Mise en cache des lectures normalisées entre couches | Réduire la latence du pare-feu (les couches recalculent les mêmes lectures) |
-| Clé d'audit persistante et rotation | Corréler les événements entre redémarrages |
-| Construction et test de l'image Docker en CI | Vérifier un livrable aujourd'hui non testé |
-| Stockage partagé pour l'anti-rejeu (Redis) | Lever la limite d'une instance unique |
+| Stockage partagé pour l'anti-rejeu et la limitation de débit (Redis) | Lever la limite d'une instance unique |
+| Rotation outillée de la clé d'audit (période de recouvrement) | Changer de clé sans perdre la corrélation des événements récents |
+| Image de base épinglée par empreinte et analyse de vulnérabilités de l'image | Rendre la construction reproductible et suivre les CVE |
 | Signatures asymétriques (JWT EdDSA) | Éviter le partage du secret entre backend et pare-feu |
 | Détection sémantique des fuites (similarité avec le prompt système) | Couvrir les fuites paraphrasées |
 | Évaluation sur plusieurs modèles et un corpus externe | Réduire le biais d'auteur et la dépendance à un modèle |
@@ -414,8 +419,8 @@ Chaque limite ci-dessous a été observée ou mesurée ; aucune protection de `p
 | mutmut | Tests de mutation sur le code de décision |
 | Ruff | Analyse statique |
 | Ollama | Modèle local pour l'évaluation réelle (Llama 3.2) |
-| Docker, Docker Compose | Déploiement du proxy dans un conteneur durci |
-| GitHub Actions | Lint, tests, benchmark et évaluation simulée avec seuils, sur Python 3.10, 3.12 et 3.13 |
+| Docker, Docker Compose | Déploiement du proxy dans un conteneur durci, testé par `scripts/docker_smoke.sh` en CI |
+| GitHub Actions | Lint, tests, benchmark et évaluation simulée avec seuils, sur Python 3.10, 3.12 et 3.13 ; test de l'image Docker |
 
 Le noyau de détection n'utilise aucun modèle d'apprentissage automatique ni appel réseau : il est déterministe et testable hors ligne.
 
@@ -454,7 +459,7 @@ pytest -q
 docker compose up --build
 ```
 
-Le proxy écoute alors sur `http://127.0.0.1:8080`. Le conteneur s'exécute avec un utilisateur non privilégié, un système de fichiers en lecture seule, toutes les capacités Linux retirées (`cap_drop: ALL`) et l'option `no-new-privileges`. Le journal d'audit est écrit dans le volume `./logs`. Cette image n'a pas encore été construite ni testée dans l'environnement de développement du projet.
+Le proxy écoute alors sur `http://127.0.0.1:8080`. Le conteneur s'exécute avec un utilisateur non privilégié, un système de fichiers en lecture seule, toutes les capacités Linux retirées (`cap_drop: ALL`) et l'option `no-new-privileges`. Le journal d'audit et sa clé (`audit.key`, créée en `0600`) sont écrits dans le volume nommé `promptfw-logs`, qui appartient à l'utilisateur du conteneur (uid 10001). `scripts/docker_smoke.sh` construit l'image et vérifie ces propriétés ; il est exécuté par la CI.
 
 ---
 
@@ -481,6 +486,8 @@ La politique est décrite en YAML. [`config/policy.example.yaml`](config/policy.
 | `roles` | `{}` | Rôle vers permissions, par exemple `support_agent: [refunds:create]` |
 | `origin_trust` | `{}` | Canaux `DATA` jugés fiables (`kb: trusted`) ; tout canal non déclaré est non fiable |
 | `assistant_after_data` | `user` | Lecture d'une réponse de l'assistant qui suit un contenu `DATA` (`user` ou `data`) |
+| `rate_limit_requests_per_minute` | désactivé | Requêtes par minute et par client (proxy) |
+| `rate_limit_chars_per_minute` | désactivé | Caractères par minute et par client, approximation du coût d'analyse (proxy) |
 | `forbidden_effects` | `[]` | Effets interdits pour tous les outils (`read`, `write`, `send`, `spend`, `delete`) |
 | `tools` | `[]` | Registre des outils autorisés |
 
@@ -527,7 +534,8 @@ Gardes disponibles : `no_untrusted_influence`, `user_confirmed`, `args_allowlist
 | `PROMPTFW_POLICY` | Politique YAML (point d'entrée `uvicorn promptfw.proxy:app_from_env --factory`) |
 | `PROMPTFW_UPSTREAM_URL` | Fournisseur du modèle (ex. `https://api.openai.com`, `http://localhost:11434`) ; absent : agent simulé |
 | `PROMPTFW_AUDIT_PATH` | Journal d'audit JSONL |
-| `PROMPTFW_AUDIT_KEY` | Clé HMAC des empreintes du journal ; absente : clé aléatoire à chaque démarrage |
+| `PROMPTFW_AUDIT_KEY` | Clé HMAC des empreintes du journal |
+| `PROMPTFW_AUDIT_KEY_FILE` | Fichier de clé d'audit, créé avec les droits `0600` s'il n'existe pas ; sans clé ni fichier, clé aléatoire à chaque démarrage (avertissement) |
 | `PROMPTFW_PRINCIPAL_KEY` | Clé de vérification des jetons d'identité ; absente : identifiant en clair accepté (mode non signé) |
 | `OPENAI_API_KEY` | Clé transmise au modèle amont si la requête ne porte pas d'en-tête `Authorization` |
 
@@ -623,6 +631,7 @@ sequenceDiagram
 
 - **Blocage compatible** : HTTP 200 au format OpenAI, `finish_reason: "content_filter"`, champ `promptfw` (étape, identifiant de requête, règles responsables), en-tête `x-promptfw-decision`.
 - **Streaming** : la réponse est mise en tampon pour être inspectée, puis rejouée en SSE.
+- **Limitation de débit** : au-delà des quotas de la politique, réponse HTTP 429 avec l'en-tête `Retry-After`, avant toute analyse. Le client est identifié par son identité vérifiée, ou à défaut par son adresse.
 - **Robustesse** : corps limité à 2 Mo (413), requête mal formée (400), modèle amont injoignable ou réponse illisible (502, sans relayer de contenu non inspecté), erreur HTTP de l'amont relayée avec son code.
 
 | Point d'accès | Méthode | Rôle |
@@ -827,7 +836,7 @@ Ces résultats reposent sur des corpus et scénarios écrits par l'auteur et sur
 ## 12. Tests et qualité
 
 ```bash
-pytest -q                                   # 224 tests (dont tests par propriétés et exhaustifs)
+pytest -q                                   # 238 tests (dont tests par propriétés et exhaustifs)
 ruff check promptfw tests                   # analyse statique
 mutmut run --max-children 4                 # tests de mutation (environ 5 minutes, hors CI)
 ```
@@ -844,7 +853,7 @@ mutmut run --max-children 4                 # tests de mutation (environ 5 minut
 
 Pour chaque contrôle de sécurité, un test doit **échouer lorsque le contrôle est retiré** ; cette propriété a été vérifiée manuellement pour chaque protection ajoutée depuis l'audit, puis de façon systématique avec mutmut sur le code de décision.
 
-La CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) exécute le lint, les tests, le benchmark avec seuils (`dev` : TPR ≥ 95 %, FPR difficile ≤ 15 %) et l'évaluation simulée avec seuils (aucune attaque réussie, aucun faux positif, aucune erreur), sur Python 3.10, 3.12 et 3.13, et conserve les rapports en artefacts.
+La CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) exécute le lint, les tests, le benchmark avec seuils (`dev` : TPR ≥ 95 %, FPR difficile ≤ 15 %) et l'évaluation simulée avec seuils (aucune attaque réussie, aucun faux positif, aucune erreur), sur Python 3.10, 3.12 et 3.13, et conserve les rapports en artefacts. Un second job construit l'image Docker et vérifie le conteneur durci (`scripts/docker_smoke.sh`) : santé, requête légitime acceptée, injection bloquée, utilisateur non root, système de fichiers en lecture seule, journal d'audit sans texte attaquant, clé d'audit en `0600`.
 
 ---
 
@@ -862,7 +871,8 @@ promptfw/
 ├── layers/             normalize, ingress, provenance, toolauth, egress
 ├── firewall.py         Orchestration, limites, décision, fail closed, rendu
 ├── proxy.py            Proxy FastAPI compatible OpenAI
-├── audit.py            Journal JSONL avec empreintes HMAC
+├── audit.py            Journal JSONL avec empreintes HMAC, clé persistante
+├── ratelimit.py        Limitation de débit par client (requêtes, coût d'analyse)
 ├── agent.py            Agent simulé, crédule et déterministe
 ├── bench.py            Benchmark dev / holdout, ablation, export
 ├── eval/               transforms.py, generate.py (fuzz), run.py (évaluation de bout en bout)
@@ -878,7 +888,7 @@ eval/
 └── policy.yaml
 docs/                   MODELE_DE_MENACE.md, EVALUATION.md
 config/policy.example.yaml
-scripts/run_real_eval.sh
+scripts/                run_real_eval.sh (Ollama), docker_smoke.sh (CI)
 examples/               Intégration en bibliothèque et via le client OpenAI
 tests/                  Suite pytest, dont tests/property/
 Dockerfile, compose.yml, .github/workflows/ci.yml

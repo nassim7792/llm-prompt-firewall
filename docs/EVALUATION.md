@@ -94,7 +94,7 @@ Le benchmark mesure une étape à la fois. Une injection non bloquée en entrée
 
 `normalize` a une contribution marginale nulle parce que `ingress` normalise aussi le texte pour ses propres règles ; elle reste la seule protection contre les caractères Unicode *tag* lorsque `ingress` est contournée. Un test échoue si une couche obtient zéro dans les deux colonnes.
 
-**Latence du pare-feu seul** (sans réseau ni modèle) : p50 ≈ 0,6 ms, p95 ≈ 1,7 ms, p99 ≈ 2,3 à 3,4 ms selon les exécutions, sur une machine de développement.
+**Latence du pare-feu seul** (sans réseau ni modèle) : p50 ≈ 0,6 ms, p95 ≈ 1,7 ms, p99 ≈ 2,3 à 3,4 ms selon les exécutions, sur une machine de développement, avant le cache des lectures. Le cache introduit au P3 réduit la médiane d'environ 17 % sur les cas `ingress` et de 29 % sur un span de 45 000 caractères ([`bench/results/2026-10-30_p3_cache_latency.md`](../bench/results/2026-10-30_p3_cache_latency.md)) ; aucun verdict du corpus n'est modifié.
 
 ## 4. Robustesse aux encodages empilés
 
@@ -202,7 +202,7 @@ mutmut n'est pas exécuté en CI (environ 5 minutes) et ne couvre pas `normalize
 ```bash
 pip install -e ".[dev]"
 
-pytest -q                                            # 224 tests
+pytest -q                                            # 238 tests
 promptfw bench --explain --json bench.json --csv bench.csv
 promptfw fuzz --n 500 --seed 1 --candidates bench/candidates
 mutmut run --max-children 4 && mutmut results       # environ 5 minutes

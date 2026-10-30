@@ -64,7 +64,7 @@ Les garanties décrites plus bas ne valent que si ces hypothèses sont respecté
 | H4 | En mode bibliothèque, l'application déclare la provenance réelle de chaque contenu ; en mode proxy, elle marque les contenus externes insérés dans des messages `user` | Un document piégé est traité comme un message de l'utilisateur, avec des poids de détection réduits |
 | H5 | Les outils n'exécutent un appel qu'**après** le verdict de `inspect_egress` | Le contrôle des outils n'a aucun effet |
 | H6 | Les API métier appelées par les outils effectuent leur propre contrôle d'autorisation | `promptfw` devient l'unique barrière, ce qui contredit la défense en profondeur |
-| H7 | Le proxy tourne en une seule instance, ou dispose d'un stockage partagé pour l'anti-rejeu | Un jeton de confirmation peut être rejoué sur une autre instance |
+| H7 | Le proxy tourne en une seule instance, ou dispose d'un stockage partagé pour l'anti-rejeu et les quotas | Un jeton de confirmation peut être rejoué, et les quotas contournés, en répartissant les requêtes entre instances |
 
 ## 5. Menaces et contrôles
 
@@ -82,6 +82,7 @@ Les garanties décrites plus bas ne valent que si ces hypothèses sont respecté
 | Rejeu d'une confirmation pour une autre action | A2, A3 | Confirmation liée à l'outil et à l'empreinte SHA-256 des arguments, `jti` à usage unique | Invariant | proxy |
 | Injection visuelle (image contenant du texte) | A1 | Contenu non textuel refusé dans les résultats d'outils (`non_text_content`) | Invariant (selon la politique) | proxy |
 | Saturation par une entrée volumineuse | A1, A2 | Limites de taille vérifiées avant toute analyse | Invariant | `firewall.py` |
+| Saturation par le volume de requêtes | A2, A3 | Limitation de débit par client (requêtes et caractères par minute), HTTP 429 | Quota | proxy (`ratelimit.py`) |
 | Erreur interne d'une couche | n/a | Refus systématique (*fail closed*) | Invariant | `firewall.py` |
 | Injection relayée par le journal d'audit | A1 | Aucun contenu attaquant journalisé, empreintes HMAC | Conception | `audit.py` |
 
@@ -103,6 +104,6 @@ Ces risques sont acceptés en l'état et documentés ; plusieurs sont mesurés d
 | Document externe non marqué en mode proxy | Le protocole ne transporte pas la provenance | Avertissement au démarrage du proxy |
 | Payload relayé par une réponse antérieure de l'assistant | Par défaut, l'assistant est relu comme `USER` | Bloqué seulement avec `assistant_after_data: data` |
 | Domaine autorisé mutualisé | La correspondance par suffixe autorise tous les sous-domaines | Responsabilité de configuration (H3) |
-| Rejeu entre plusieurs instances du proxy | Cache anti-rejeu en mémoire | Hypothèse H7 |
+| Rejeu entre plusieurs instances du proxy | Cache anti-rejeu et quotas en mémoire | Hypothèse H7 |
 | Secret partagé HMAC | Le backend et le pare-feu détiennent la même clé | Une signature asymétrique éviterait ce partage |
 | Contenu non textuel accepté dans les messages `user` | Choix par défaut `block_untrusted` | Configurable avec `non_text_content: block` |
