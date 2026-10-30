@@ -6,6 +6,7 @@ services:
     environment:
       PROMPTFW_POLICY: /app/config/policy.example.yaml
       PROMPTFW_AUDIT_PATH: /app/logs/audit.jsonl
+      PROMPTFW_AUDIT_KEY_FILE: /app/logs/audit.key   # created on first start (mode 0600), kept across restarts
       # PROMPTFW_UPSTREAM_URL: https://api.openai.com   # uncomment to use a real model
       # OPENAI_API_KEY: ${OPENAI_API_KEY}
     volumes:
