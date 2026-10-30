@@ -6,6 +6,8 @@ Chaque fichier est la sortie brute de `promptfw bench --explain`, conservée pou
 |---|---|
 | `2026-10-29_p0_baseline.txt` | Première exécution du jeu `holdout`, avant toute correction P0 |
 | `2026-10-29_p0_after.txt` | Après les corrections P0 (limites de taille, URL sans schéma et `user@`, images par référence et HTML, typage strict, proxy) |
+| `2026-10-30_p1_after.txt` | Après P1 (autorisation, identité signée, provenance, normalisation renforcée par les tests de propriétés) |
+| `2026-10-30_p1_fuzz_seed1.txt` | `promptfw fuzz --n 500 --seed 1` : 500 attaques composées générées, décision d'entrée uniquement |
 
 Lecture : le jeu `dev` a servi à régler les règles et donne une estimation optimiste. Le jeu
 `holdout` n'a jamais servi au réglage des règles d'`ingress` ; voir `bench/corpus/holdout/README.md`
