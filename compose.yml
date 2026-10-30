@@ -10,8 +10,11 @@ services:
       # PROMPTFW_UPSTREAM_URL: https://api.openai.com   # uncomment to use a real model
       # OPENAI_API_KEY: ${OPENAI_API_KEY}
     volumes:
-      - ./logs:/app/logs
+      - promptfw-logs:/app/logs   # named volume: owned by the container user (uid 10001)
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+
+volumes:
+  promptfw-logs:

@@ -51,3 +51,27 @@ def test_short_key_file_is_refused(tmp_path):
     (tmp_path / "k").write_bytes(b"short")
     with pytest.raises(ValueError):
         load_or_create_key(tmp_path / "k")
+
+
+def test_unwritable_audit_path_fails_at_start(tmp_path):
+    import os
+
+    import pytest
+
+    from promptfw.audit import AuditLog
+    if os.geteuid() == 0:
+        pytest.skip("root can write everywhere")
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    with pytest.raises(RuntimeError, match="not writable"):
+        AuditLog(ro / "audit.jsonl")
+
+
+def test_audit_path_that_is_a_directory_fails_at_start(tmp_path):
+    import pytest
+
+    from promptfw.audit import AuditLog
+    (tmp_path / "audit.jsonl").mkdir()
+    with pytest.raises(RuntimeError, match="not writable"):
+        AuditLog(tmp_path / "audit.jsonl")

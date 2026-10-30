@@ -73,6 +73,11 @@ class AuditLog:
         self.key_id = key_id(self._key)
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            try:  # fail fast at start-up rather than on the first request
+                with self.path.open("a", encoding="utf-8"):
+                    pass
+            except OSError as e:
+                raise RuntimeError(f"audit log {self.path} is not writable: {e.strerror}") from None
             if not persistent:
                 log.warning("no audit key configured (PROMPTFW_AUDIT_KEY or PROMPTFW_AUDIT_KEY_FILE): "
                             "digests will not be comparable across restarts")

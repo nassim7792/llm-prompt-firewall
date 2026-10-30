@@ -26,3 +26,12 @@ jobs:
             bench-report.json
             bench-report.csv
             eval-report/
+
+  docker:
+    # Builds the image and checks the hardened container end to end:
+    # health, benign request allowed, injection blocked, uid 10001, read-only root,
+    # audit log written without attacker text, audit key created with mode 0600.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/docker_smoke.sh promptfw:ci
