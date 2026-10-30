@@ -32,6 +32,7 @@ from promptfw.firewall import FENCE_PREAMBLE, Firewall
 from promptfw.identity import ReplayGuard, TokenError, args_digest, verify
 from promptfw.layers import fence_close, fence_open
 from promptfw.policy import Policy
+from promptfw.ratelimit import RateLimiter
 from promptfw.tools import AgentReply, ToolCall
 from promptfw.verdict import Finding, Severity, Verdict
 
@@ -241,6 +242,7 @@ def create_app(policy: Policy | None = None, upstream_url: str | None = None, au
     stats: Counter[str] = Counter()
     app = FastAPI(title="promptfw", version="0.1.0")
     replay = ReplayGuard()
+    limiter = RateLimiter(policy.rate_limit_requests_per_minute, policy.rate_limit_chars_per_minute)
     log.warning(WEAK_MODE_WARNING)
     if not principal_key:
         log.warning(UNSIGNED_WARNING)
@@ -326,6 +328,15 @@ def create_app(policy: Policy | None = None, upstream_url: str | None = None, au
         if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
             raise HTTPException(400, "invalid chat completion request")
         principal, confirmed, id_findings = resolve_identity(request.headers.get(PRINCIPAL_HEADER))
+        # Rate limit before any inspection, keyed on the verified identity or the source address.
+        client = f"user:{principal.id}" if principal and not id_findings else \
+            f"addr:{request.client.host if request.client else 'unknown'}"
+        ok, reason, retry = limiter.check(client, len(raw))
+        if not ok:
+            stats["rate_limited"] += 1
+            headers = {"retry-after": str(int(retry) + 1)} if retry != float("inf") else {}
+            return JSONResponse({"error": {"message": "rate limit exceeded", "type": "rate_limit_error",
+                                           "code": reason}}, status_code=429, headers=headers)
         ctx = infer_context(messages, principal, policy)
         verdict = fw.inspect(ctx, (*id_findings, *non_text_findings(messages, policy)))
         audit.record("ingress", verdict, ctx, request_id)

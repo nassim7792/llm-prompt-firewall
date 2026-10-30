@@ -67,6 +67,10 @@ class Policy:
     #   user (default, known compromise) | data (stricter: the turn may carry the payload forward)
     assistant_after_data: str = "user"
 
+    # Proxy rate limiting per client (None: disabled). Characters approximate the analysis cost.
+    rate_limit_requests_per_minute: int | None = None
+    rate_limit_chars_per_minute: int | None = None
+
     def __post_init__(self) -> None:
         unknown = set(self.enabled_layers) - set(LAYERS)
         if unknown:
@@ -81,6 +85,10 @@ class Policy:
         bad = {k: v for k, v in self.origin_trust.items() if v not in TRUST_LEVELS}
         if bad:
             raise PolicyError(f"origin_trust values must be one of {TRUST_LEVELS}: {bad}")
+        for name in ("rate_limit_requests_per_minute", "rate_limit_chars_per_minute"):
+            value = getattr(self, name)
+            if value is not None and value <= 0:
+                raise PolicyError(f"{name} must be positive or null")
         if self.assistant_after_data not in ASSISTANT_MODES:
             raise PolicyError(f"assistant_after_data must be one of {ASSISTANT_MODES}")
         for t in self.tools.values():
@@ -123,6 +131,8 @@ class Policy:
             roles={r: frozenset(p) for r, p in (raw.get("roles") or {}).items()},
             origin_trust={str(k): str(v) for k, v in (raw.get("origin_trust") or {}).items()},
             assistant_after_data=str(raw.get("assistant_after_data", "user")),
+            rate_limit_requests_per_minute=raw.get("rate_limit_requests_per_minute"),
+            rate_limit_chars_per_minute=raw.get("rate_limit_chars_per_minute"),
         )
 
     @classmethod
